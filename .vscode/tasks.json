@@ -1,0 +1,18 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Tably: iniciar PostgreSQL local",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"db"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

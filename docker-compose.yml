@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tably
+      POSTGRES_USER: tably
+      POSTGRES_PASSWORD: tably
+    ports:
+      - "5432:5432"
+    volumes:
+      - tably-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tably -d tably"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  tably-postgres:
