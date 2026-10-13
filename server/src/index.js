@@ -7,13 +7,10 @@ if (!process.env.PUBLIC_URL && process.env.RENDER_EXTERNAL_URL) {
   process.env.PUBLIC_URL = process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
 }
 
-const required = ['DATABASE_URL', 'JWT_SECRET', 'TOKEN_ENCRYPTION_KEY_BASE64', 'PUBLIC_URL'];
+const required = ['DATABASE_URL', 'JWT_SECRET', 'PUBLIC_URL'];
 const missing = required.filter((name) => !process.env[name]);
 if (missing.length) throw new Error(`Faltan variables de entorno: ${missing.join(', ')}`);
 if (process.env.JWT_SECRET.length < 32) throw new Error('JWT_SECRET debe tener al menos 32 caracteres.');
-if (Buffer.from(process.env.TOKEN_ENCRYPTION_KEY_BASE64, 'base64').length !== 32) {
-  throw new Error('TOKEN_ENCRYPTION_KEY_BASE64 debe contener 32 bytes codificados en Base64.');
-}
 if (process.env.NODE_ENV === 'production' && !process.env.PUBLIC_URL.startsWith('https://')) {
   throw new Error('PUBLIC_URL debe usar HTTPS en producción.');
 }

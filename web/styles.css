@@ -134,6 +134,14 @@ a { color: inherit; }
 .empty { border: 1px dashed var(--line); border-radius: 6px; padding: 20px; color: var(--muted); text-align: center; font-size: 14px; }
 .billing { display: grid; gap: 12px; }
 .billing-price { font: 600 32px 'Fraunces', serif; }
+.billing-reminder { margin: 0; padding: 12px; border-radius: 6px; background: var(--accent-soft); color: var(--ink); font-size: 13px; line-height: 1.5; }
+.billing-reminder.overdue { background: var(--danger-soft, #fce9e6); color: var(--danger, #8b2d21); }
+.platform-admin { max-width: 980px; margin: 0 auto; }
+.platform-cafe-list { display: grid; gap: 14px; margin-top: 20px; }
+.platform-cafe { padding: 20px; }
+.platform-billing-controls { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(150px, 1fr) auto; gap: 12px; align-items: end; }
+.platform-billing-controls .field > span { font-size: 13px; font-weight: 600; }
+.platform-actions { display: flex; gap: 8px; }
 .customer { max-width: 520px; margin: 0 auto; }
 .customer-head { padding: 18px 0 16px; border-bottom: 1px solid var(--line); }
 .customer-head h1 { margin: 0; font: 600 30px 'Fraunces', serif; }
@@ -203,5 +211,7 @@ a { color: inherit; }
   .checkout-layout { grid-template-columns: 1fr; gap: 14px; margin-top: 16px; }
   .ticket, .payment-panel { padding: 18px; }
   .checkout-page .customer-head { padding-top: 12px; }
+  .platform-billing-controls { grid-template-columns: 1fr 1fr; }
+  .platform-actions { grid-column: 1 / -1; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }

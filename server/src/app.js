@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -10,18 +10,7 @@ import bcrypt from 'bcryptjs';
 import QRCode from 'qrcode';
 import { z } from 'zod';
 import { query } from './db.js';
-import { encryptSecret, issueSession, requireAuth } from './security.js';
-import {
-  createOrderPreference,
-  createSubscription,
-  exchangeAuthorizationCode,
-  getPlatformAccessToken,
-  getSellerToken,
-  mpRequest,
-  requireMpApplication,
-  sellerAuthorizationUrl,
-  verifyWebhook,
-} from './mp.js';
+import { issuePlatformSession, issueSession, requireAuth, requirePlatformAdmin } from './security.js';
 
 const app = express();
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -34,6 +23,7 @@ const registerSchema = z.object({
   tableCount: z.coerce.number().int().min(1).max(200),
 });
 const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1).max(72) });
+const platformLoginSchema = z.object({ email: z.string().trim().email().max(254), password: z.string().min(1).max(256) });
 const menuItemSchema = z.object({
   category: z.string().trim().min(1).max(40),
   name: z.string().trim().min(1).max(100),
@@ -72,9 +62,14 @@ function setSession(res, restaurantId) {
   });
 }
 
-async function restaurantForRequest(req) {
-  const result = await query('SELECT * FROM restaurants WHERE id = $1', [req.restaurantId]);
-  return result.rows[0];
+function setPlatformSession(res, email) {
+  res.cookie('tably_session', issuePlatformSession(email), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: '/',
+  });
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -141,11 +136,66 @@ app.post('/api/auth/logout', (_req, res) => {
   res.sendStatus(204);
 });
 
+app.post('/api/platform/auth/login', authLimiter, (req, res) => {
+  const parsed = platformLoginSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Email o contraseña incorrectos.' });
+  const configuredEmail = process.env.PLATFORM_ADMIN_EMAIL?.trim().toLowerCase();
+  const configuredPassword = process.env.PLATFORM_ADMIN_PASSWORD || '';
+  const submittedEmail = parsed.data.email.toLowerCase();
+  const submittedBytes = Buffer.from(parsed.data.password);
+  const configuredBytes = Buffer.from(configuredPassword);
+  const passwordMatches = configuredBytes.length > 0 && submittedBytes.length === configuredBytes.length
+    && timingSafeEqual(submittedBytes, configuredBytes);
+  if (!configuredEmail || !configuredPassword || submittedEmail !== configuredEmail || !passwordMatches) {
+    return res.status(401).json({ error: 'Email o contraseña incorrectos.' });
+  }
+  setPlatformSession(res, configuredEmail);
+  res.json({ ok: true });
+});
+
+app.get('/api/platform/auth/me', requirePlatformAdmin, (req, res) => res.json({ email: req.platformAdminEmail }));
+
+app.get('/api/platform/subscriptions', requirePlatformAdmin, async (_req, res) => {
+  const result = await query(
+    `SELECT id, name, email, table_count AS "tableCount", plan,
+            subscription_status AS "subscriptionStatus", subscription_due_at AS "subscriptionDueAt",
+            subscription_paid_at AS "subscriptionPaidAt", created_at AS "createdAt"
+     FROM restaurants ORDER BY subscription_due_at ASC, name ASC`,
+  );
+  res.json(result.rows);
+});
+
+app.post('/api/platform/subscriptions/:id/paid', requirePlatformAdmin, async (req, res) => {
+  const result = await query(
+    `UPDATE restaurants SET subscription_status = 'authorized', subscription_paid_at = NOW(),
+       subscription_due_at = NOW() + INTERVAL '1 month'
+     WHERE id = $1 RETURNING id`,
+    [req.params.id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'No encontramos ese café.' });
+  res.sendStatus(204);
+});
+
+app.patch('/api/platform/subscriptions/:id', requirePlatformAdmin, async (req, res) => {
+  const statuses = ['trial', 'pending', 'authorized', 'cancelled', 'paused'];
+  const { status, dueAt } = req.body || {};
+  if (!statuses.includes(status) || typeof dueAt !== 'string' || Number.isNaN(Date.parse(dueAt))) {
+    return res.status(400).json({ error: 'El estado o la fecha de vencimiento no son válidos.' });
+  }
+  const result = await query(
+    `UPDATE restaurants SET subscription_status = $1, subscription_due_at = $2,
+       subscription_paid_at = CASE WHEN $1 = 'authorized' THEN COALESCE(subscription_paid_at, NOW()) ELSE subscription_paid_at END
+     WHERE id = $3 RETURNING id`,
+    [status, dueAt, req.params.id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'No encontramos ese café.' });
+  res.sendStatus(204);
+});
+
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   const result = await query(
     `SELECT id, slug, name, email, table_count AS "tableCount", plan, subscription_status AS "subscriptionStatus",
-            (mp_user_id IS NOT NULL) AS "mercadoPagoConnected",
-            subscription_id AS "subscriptionId"
+            subscription_due_at AS "subscriptionDueAt"
      FROM restaurants WHERE id = $1`,
     [req.restaurantId],
   );
@@ -176,7 +226,7 @@ app.post('/api/public/:slug/orders', async (req, res) => {
   const table = Number(req.body.table);
   const method = req.body.method;
   const requested = Array.isArray(req.body.items) ? req.body.items : [];
-  if (!Number.isInteger(table) || !['mercadopago', 'cash', 'card'].includes(method) || !requested.length || requested.length > 30) {
+  if (!Number.isInteger(table) || !['cash', 'card'].includes(method) || !requested.length || requested.length > 30) {
     return res.status(400).json({ error: 'El pedido o el medio de pago no son válidos.' });
   }
   const restaurantResult = await query('SELECT * FROM restaurants WHERE slug = $1', [req.params.slug]);
@@ -201,28 +251,12 @@ app.post('/api/public/:slug/orders', async (req, res) => {
   if (total <= 0) return res.status(400).json({ error: 'El total del pedido no es válido.' });
 
   const orderId = randomUUID();
-  let token;
-  if (method === 'mercadopago') {
-    if (!restaurant.mp_access_token_enc) return res.status(409).json({ error: 'Este local todavía no conectó Mercado Pago.' });
-    token = await getSellerToken(restaurant);
-  }
   await query(
     `INSERT INTO orders (id, restaurant_id, table_number, payment_method, items, total_ars)
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [orderId, restaurant.id, table, method, JSON.stringify(items), total],
   );
-  if (method === 'mercadopago') {
-    try {
-      const order = { id: orderId, table_number: table };
-      const preference = await createOrderPreference(order, restaurant, items, token);
-      await query('UPDATE orders SET mp_preference_id = $1 WHERE id = $2', [preference.id, orderId]);
-      return res.status(201).json({ id: orderId, checkoutUrl: preference.init_point });
-    } catch (error) {
-      await query("UPDATE orders SET payment_status = 'rejected' WHERE id = $1", [orderId]);
-      throw error;
-    }
-  }
-  res.status(201).json({ id: orderId, checkoutUrl: null });
+  res.status(201).json({ id: orderId });
 });
 
 app.get('/api/public/orders/:id', async (req, res) => {
@@ -292,10 +326,10 @@ app.delete('/api/admin/menu/:id', requireAuth, async (req, res) => {
   res.sendStatus(204);
 });
 
-app.post('/api/admin/orders/:id/cash-payment', requireAuth, async (req, res) => {
+app.post('/api/admin/orders/:id/collect-payment', requireAuth, async (req, res) => {
   const result = await query(
     `UPDATE orders SET payment_status = 'approved'
-     WHERE id = $1 AND restaurant_id = $2 AND payment_method IN ('cash', 'card') AND payment_status = 'pending'
+     WHERE id = $1 AND restaurant_id = $2 AND payment_method IN ('mercadopago', 'cash', 'card') AND payment_status = 'pending'
      RETURNING id`,
     [req.params.id, req.restaurantId],
   );
@@ -343,104 +377,8 @@ app.get('/api/admin/tables/:table/qr.png', requireAuth, async (req, res) => {
   res.send(await QRCode.toBuffer(url.href, { type: 'png', width: 360, margin: 2, errorCorrectionLevel: 'M' }));
 });
 
-app.get('/api/mercadopago/config', (_req, res) => {
-  res.json({ oauthEnabled: Boolean(process.env.MP_CLIENT_ID && process.env.MP_CLIENT_SECRET) });
-});
-
-app.get('/api/mercadopago/connect', requireAuth, async (req, res) => {
-  requireMpApplication();
-  const state = randomBytes(32).toString('hex');
-  await query("DELETE FROM oauth_states WHERE expires_at < NOW()");
-  await query('INSERT INTO oauth_states (state, restaurant_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL \'10 minutes\')', [state, req.restaurantId]);
-  res.redirect(sellerAuthorizationUrl(state));
-});
-
-app.get('/api/mercadopago/callback', async (req, res) => {
-  if (typeof req.query.state !== 'string') return res.redirect('/?mp=error');
-  const stateResult = await query('DELETE FROM oauth_states WHERE state = $1 AND expires_at > NOW() RETURNING restaurant_id', [req.query.state]);
-  if (!stateResult.rowCount) return res.redirect('/?mp=error');
-  if (req.query.error || typeof req.query.code !== 'string' || !req.query.code) return res.redirect('/?mp=error');
-  let token;
-  try { token = await exchangeAuthorizationCode(req.query.code); }
-  catch { return res.redirect('/?mp=error'); }
-  if (!token.access_token || !token.refresh_token || !token.user_id || !token.expires_in) return res.redirect('/?mp=error');
-  await query(
-    `UPDATE restaurants
-     SET mp_user_id = $1, mp_access_token_enc = $2, mp_refresh_token_enc = $3,
-         mp_token_expires_at = NOW() + ($4 * INTERVAL '1 second')
-     WHERE id = $5`,
-    [String(token.user_id), encryptSecret(token.access_token), encryptSecret(token.refresh_token), token.expires_in, stateResult.rows[0].restaurant_id],
-  );
-  res.redirect('/?mp=connected');
-});
-
-app.post('/api/subscriptions/start', requireAuth, async (req, res) => {
-  const restaurant = await restaurantForRequest(req);
-  if (!restaurant) return res.status(404).json({ error: 'No encontramos el local.' });
-  if (['pending', 'authorized'].includes(restaurant.subscription_status)) {
-    return res.status(409).json({ error: 'Ya hay una suscripción en curso para este local.' });
-  }
-  const platformToken = await getPlatformAccessToken();
-  const amount = restaurant.table_count > 15 ? 45000 : 30000;
-  const subscription = await createSubscription(restaurant, platformToken, amount);
-  await query("UPDATE restaurants SET subscription_id = $1, subscription_status = 'pending' WHERE id = $2", [subscription.id, restaurant.id]);
-  res.json({ checkoutUrl: subscription.init_point });
-});
-
-app.post('/api/subscriptions/cancel', requireAuth, async (req, res) => {
-  const restaurant = await restaurantForRequest(req);
-  if (!restaurant?.subscription_id || !['pending', 'authorized'].includes(restaurant.subscription_status)) {
-    return res.status(409).json({ error: 'No hay una suscripción activa para cancelar.' });
-  }
-  const platformToken = await getPlatformAccessToken();
-  await mpRequest(`/preapproval/${encodeURIComponent(restaurant.subscription_id)}`, platformToken, 'PUT', { status: 'cancelled' });
-  await query("UPDATE restaurants SET subscription_status = 'cancelled' WHERE id = $1", [restaurant.id]);
-  res.sendStatus(204);
-});
-
-app.post('/api/payments/webhook', async (req, res) => {
-  if (!verifyWebhook(req)) return res.sendStatus(401);
-  const type = req.body?.type;
-  const resourceId = String(req.body?.data?.id || req.query['data.id'] || '');
-  if (!resourceId) return res.sendStatus(200);
-
-  if (type === 'payment') {
-    const sellerId = String(req.body?.user_id || '');
-    const restaurantResult = await query('SELECT * FROM restaurants WHERE mp_user_id = $1', [sellerId]);
-    const restaurant = restaurantResult.rows[0];
-    if (!restaurant) return res.sendStatus(200);
-    const token = await getSellerToken(restaurant);
-    const payment = await mpRequest(`/v1/payments/${encodeURIComponent(resourceId)}`, token);
-    const orderResult = await query(
-      `SELECT id, total_ars FROM orders
-       WHERE id = $1 AND restaurant_id = $2 AND payment_method = 'mercadopago'`,
-      [payment.external_reference, restaurant.id],
-    );
-    const order = orderResult.rows[0];
-    if (order && String(payment.collector_id) === restaurant.mp_user_id && payment.currency_id === 'ARS' && Number(payment.transaction_amount) === order.total_ars) {
-      const status = payment.status === 'approved' ? 'approved'
-        : ['refunded', 'charged_back'].includes(payment.status) ? 'refunded'
-          : ['rejected', 'cancelled'].includes(payment.status) ? 'rejected' : 'pending';
-      await query(
-        `UPDATE orders SET payment_status = CASE
-           WHEN payment_status = 'approved' AND $1 NOT IN ('approved', 'refunded') THEN payment_status
-           ELSE $1 END,
-           mp_payment_id = $2
-         WHERE id = $3`,
-        [status, String(payment.id), order.id],
-      );
-    }
-  } else if (type === 'subscription_preapproval') {
-    const platformToken = await getPlatformAccessToken();
-    const subscription = await mpRequest(`/preapproval/${encodeURIComponent(resourceId)}`, platformToken);
-    if (subscription.external_reference) {
-      await query('UPDATE restaurants SET subscription_status = $1 WHERE id = $2 AND subscription_id = $3', [subscription.status, subscription.external_reference, String(subscription.id)]);
-    }
-  }
-  res.sendStatus(200);
-});
-
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Ruta no encontrada.' }));
+app.get('/platform-admin', (_req, res) => res.sendFile(path.join(webRoot, 'index.html')));
 app.use(express.static(webRoot, { extensions: ['html'] }));
 app.get('/menu/:slug', (_req, res) => res.sendFile(path.join(webRoot, 'index.html')));
 app.use((error, _req, res, _next) => fail(res, error));

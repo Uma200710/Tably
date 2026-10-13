@@ -8,12 +8,23 @@ CREATE TABLE IF NOT EXISTS restaurants (
   plan TEXT NOT NULL DEFAULT 'base' CHECK (plan IN ('base', 'ampliado')),
   subscription_status TEXT NOT NULL DEFAULT 'trial',
   subscription_id TEXT,
+  subscription_due_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days'),
+  subscription_paid_at TIMESTAMPTZ,
   mp_user_id TEXT UNIQUE,
   mp_access_token_enc TEXT,
   mp_refresh_token_enc TEXT,
   mp_token_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS subscription_due_at TIMESTAMPTZ;
+UPDATE restaurants SET subscription_due_at = CASE
+  WHEN subscription_status = 'authorized' THEN NOW() + INTERVAL '30 days'
+  ELSE created_at + INTERVAL '30 days'
+END WHERE subscription_due_at IS NULL;
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS subscription_paid_at TIMESTAMPTZ;
+ALTER TABLE restaurants ALTER COLUMN subscription_due_at SET DEFAULT (NOW() + INTERVAL '30 days');
+ALTER TABLE restaurants ALTER COLUMN subscription_due_at SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS menu_items (
   id UUID PRIMARY KEY,

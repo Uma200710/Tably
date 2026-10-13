@@ -95,11 +95,11 @@ function renderAuth(showRegister = false) {
   app.innerHTML = `<div class="auth-wrap">
     <section class="intro"><div class="intro-mark">Menos espera, más servicio</div>
       <h1>El salón sigue en movimiento.</h1>
-      <p>Pedidos desde cada mesa, comanda al instante y cobros directos a la cuenta de tu café.</p>
+      <p>Pedidos desde cada mesa, comanda al instante y cobros en persona.</p>
     </section>
     <section class="panel" aria-label="Acceso al local">
       <h2>${showRegister ? 'Abrí tu café en Tably' : 'Entrar al local'}</h2>
-      <p class="muted small">${showRegister ? 'Empezá con tu menú y tus mesas. Vincularás Mercado Pago mediante autorización segura, sin compartir claves.' : 'Gestioná pedidos, mesas y cobros.'}</p>
+      <p class="muted small">${showRegister ? 'Empezá con tu menú y tus mesas. El personal cobra cada pedido en la mesa.' : 'Gestioná pedidos, mesas y cobros.'}</p>
       <form class="form" id="auth-form">
         ${showRegister ? `<div class="field"><label for="cafe-name">Nombre del café</label><input id="cafe-name" name="name" required minlength="2" maxlength="80" autocomplete="organization"></div>` : ''}
         <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="email"></div>
@@ -120,16 +120,6 @@ function renderAuth(showRegister = false) {
     if (showRegister) data.tableCount = Number(data.tableCount);
     try {
       await api(`/api/auth/${showRegister ? 'register' : 'login'}`, { method: 'POST', body: JSON.stringify(data) });
-      if (showRegister) {
-        const config = await api('/api/mercadopago/config').catch(() => ({ oauthEnabled: false }));
-        if (config.oauthEnabled) {
-          location.assign('/api/mercadopago/connect');
-          return;
-        }
-        await renderDashboard();
-        toast('Cuenta creada. Vinculá Mercado Pago desde el panel para cobrar pedidos online.');
-        return;
-      }
       await renderDashboard();
     } catch (error) {
       toast(error.message);
@@ -140,26 +130,24 @@ function renderAuth(showRegister = false) {
 
 function orderCard(order) {
   const items = order.items.map((item) => `${item.quantity} × ${esc(item.name)}`).join(', ');
-  const payment = order.paymentMethod === 'mercadopago' ? 'Mercado Pago' : order.paymentMethod === 'cash' ? 'Efectivo' : 'Tarjeta en mesa';
+  const payment = order.paymentMethod === 'cash' ? 'Efectivo' : 'Mercado Pago o tarjeta';
   const actions = [];
-  if (order.paymentStatus === 'pending' && order.paymentMethod !== 'mercadopago') {
-    actions.push(`<button class="btn green small-btn" data-cash-paid="${order.id}">Confirmar cobro</button>`);
+  if (order.paymentStatus === 'pending') {
+    actions.push(`<button class="btn green small-btn" data-collect-paid="${order.id}">Confirmar cobro</button>`);
   }
   const next = { received: 'preparing', preparing: 'ready', ready: 'delivered' }[order.orderStatus];
   if (order.paymentStatus === 'approved' && next) {
     actions.push(`<button class="btn secondary small-btn" data-next-status="${order.id}" data-status="${next}">Pasar a ${next === 'preparing' ? 'preparando' : next === 'ready' ? 'listo' : 'entregado'}</button>`);
   }
-  const waitingForCollection = order.paymentStatus === 'pending' && order.paymentMethod !== 'mercadopago';
-  const waitingForMp = order.paymentStatus === 'pending' && order.paymentMethod === 'mercadopago';
-  return `<article class="order"><div>${waitingForCollection ? `<span class="pill collection-needed">Acercarse a mesa ${order.tableNumber} · cobrar ${payment}</span>` : ''}${waitingForMp ? `<span class="pill">Esperando confirmación de Mercado Pago</span>` : ''}<strong>Mesa ${order.tableNumber} · ${money(order.totalArs)}</strong>
+  const waitingForCollection = order.paymentStatus === 'pending';
+  return `<article class="order"><div>${waitingForCollection ? `<span class="pill collection-needed">Acercarse a mesa ${order.tableNumber} · cobrar ${payment}</span>` : ''}<strong>Mesa ${order.tableNumber} · ${money(order.totalArs)}</strong>
     <div class="order-detail">${items}<br>${payment} · ${order.paymentStatus === 'approved' ? 'Pagado' : 'Pendiente'} · ${order.orderStatus}</div></div>
     <div class="order-actions">${actions.join('')}</div></article>`;
 }
 
 function orderListHtml(orders) {
   const groups = [
-    ['Cobros en mesa', orders.filter((order) => order.paymentStatus === 'pending' && order.paymentMethod !== 'mercadopago'), 'No hay mesas esperando el cobro del personal.'],
-    ['Esperando Mercado Pago', orders.filter((order) => order.paymentStatus === 'pending' && order.paymentMethod === 'mercadopago'), 'No hay pagos online pendientes. Los pedidos no llegan a cocina hasta confirmar el pago.'],
+    ['Cobros en mesa', orders.filter((order) => order.paymentStatus === 'pending'), 'No hay mesas esperando el cobro del personal.'],
     ['Comanda', orders.filter((order) => order.paymentStatus === 'approved' && order.orderStatus !== 'delivered'), 'No hay pedidos pagados en preparación.'],
     ['Entregados', orders.filter((order) => order.paymentStatus === 'approved' && order.orderStatus === 'delivered'), 'Todavía no hay pedidos entregados.'],
   ];
@@ -292,10 +280,10 @@ function bindMenuControls() {
 }
 
 function bindOrderControls() {
-  document.querySelectorAll('[data-cash-paid]').forEach((button) => button.addEventListener('click', async () => {
+  document.querySelectorAll('[data-collect-paid]').forEach((button) => button.addEventListener('click', async () => {
     button.disabled = true;
     try {
-      await api(`/api/admin/orders/${button.dataset.cashPaid}/cash-payment`, { method: 'POST', body: '{}' });
+      await api(`/api/admin/orders/${button.dataset.collectPaid}/collect-payment`, { method: 'POST', body: '{}' });
       await refreshDashboardOrders();
     } catch (error) { button.disabled = false; toast(error.message); }
   }));
@@ -321,8 +309,8 @@ async function refreshDashboardOrders() {
 
     const scrollY = window.scrollY;
     const focusedButton = list.contains(document.activeElement) ? document.activeElement : null;
-    const focusedAction = focusedButton?.dataset.cashPaid
-      ? ['cashPaid', focusedButton.dataset.cashPaid]
+    const focusedAction = focusedButton?.dataset.collectPaid
+      ? ['collectPaid', focusedButton.dataset.collectPaid]
       : focusedButton?.dataset.nextStatus
         ? ['nextStatus', focusedButton.dataset.nextStatus]
         : null;
@@ -352,17 +340,33 @@ async function renderDashboard() {
     ]);
     topbarMeta.innerHTML = `${esc(restaurant.name)} <button class="text-btn" id="logout">Salir</button>`;
     const price = restaurant.tableCount > 15 ? 45000 : 30000;
-    const subscriptionLabels = { trial: 'Prueba inicial · 30 días', pending: 'Autorización pendiente', authorized: 'Suscripción activa', cancelled: 'Suscripción cancelada', paused: 'Suscripción pausada' };
+    const subscriptionLabels = { trial: 'Prueba inicial', pending: 'Pago pendiente', authorized: 'Activa', cancelled: 'Cancelada', paused: 'Pausada' };
     const subscriptionLabel = subscriptionLabels[restaurant.subscriptionStatus] || 'Sin suscripción';
-    const canStartSubscription = !['pending', 'authorized'].includes(restaurant.subscriptionStatus);
-    const canCancelSubscription = ['pending', 'authorized'].includes(restaurant.subscriptionStatus) && restaurant.subscriptionId;
+    const dueDate = new Date(restaurant.subscriptionDueAt);
+    const dueDateText = new Intl.DateTimeFormat('es-AR', { dateStyle: 'long' }).format(dueDate);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const dueDay = new Date(dueDate); dueDay.setHours(0, 0, 0, 0);
+    const daysUntilDue = Math.ceil((dueDay - today) / 86_400_000);
+    const subscriptionOverdue = ['trial', 'pending', 'authorized'].includes(restaurant.subscriptionStatus) && daysUntilDue < 0;
+    const subscriptionReminder = restaurant.subscriptionStatus === 'trial'
+      ? daysUntilDue >= 0
+        ? `Tu prueba vence el ${dueDateText}. Coordiná el pago con Tably para continuar usando el servicio.`
+        : `Tu prueba venció el ${dueDateText}. Contactá a Tably para coordinar el pago de tu plan.`
+      : restaurant.subscriptionStatus === 'authorized'
+        ? daysUntilDue < 0
+          ? `Tu plan venció el ${dueDateText}. Contactá a Tably para confirmar el pago.`
+          : daysUntilDue <= 7
+            ? `Tu plan vence pronto, el ${dueDateText}. Acordate de coordinar el pago con Tably.`
+            : `Próximo vencimiento: ${dueDateText}.`
+        : restaurant.subscriptionStatus === 'pending'
+          ? `Tenemos registrado un pago pendiente. Contactá a Tably para confirmar el estado.`
+          : `Las suscripciones se coordinan manualmente con Tably. Próximo vencimiento: ${dueDateText}.`;
     const tableCards = tables.map((table) => `<article class="table">
       <div class="table-actions"><b>Mesa ${table.table}</b><a class="text-btn small" href="${esc(table.qrUrl)}" download="tably-${restaurant.slug}-mesa-${table.table}.png">Descargar QR</a></div>
       <img src="${esc(table.qrUrl)}" alt="QR para la mesa ${table.table}">
       <a href="${esc(table.url)}" target="_blank" rel="noreferrer">${esc(table.url)}</a>
     </article>`).join('');
-    app.innerHTML = `<div class="heading-row"><div><h1>Panel del local</h1><p>${esc(restaurant.name)} · ${restaurant.tableCount} mesas · <a href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Abrir menú</a></p></div>
-      <span class="pill ${restaurant.mercadoPagoConnected ? 'green' : ''}">${restaurant.mercadoPagoConnected ? 'Mercado Pago conectado' : 'Conectá Mercado Pago'}</span></div>
+    app.innerHTML = `<div class="heading-row"><div><h1>Panel del local</h1><p>${esc(restaurant.name)} · ${restaurant.tableCount} mesas · <a href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Abrir menú</a></p></div></div>
       <div class="dashboard-grid"><div class="stack">
         <section class="section"><div class="section-head"><h2>Pedidos y cobros</h2><span class="pill" data-orders-count>${orders.length} pedidos</span></div>
           <div class="orders" id="orders-list">${orderListHtml(orders)}</div></section>
@@ -380,28 +384,14 @@ async function renderDashboard() {
         <section class="section"><div class="section-head"><h2>QR por mesa</h2><span class="muted small">Enlaces listos para compartir</span></div><div class="table-grid">${tableCards}</div></section>
       </div><div class="stack">
         <section class="section"><div class="section-head"><h2>Cuenta del local</h2></div>
-          <div class="billing"><span class="pill ${restaurant.subscriptionStatus === 'authorized' ? 'green' : ''}">${subscriptionLabel}</span><div>Plan ${restaurant.plan === 'ampliado' ? 'Ampliado' : 'Base'}</div><div class="billing-price">${money(price)}<span class="muted small"> / mes</span></div>
-            <button class="btn secondary" id="connect-mp">${restaurant.mercadoPagoConnected ? 'Reconectar Mercado Pago' : 'Conectar Mercado Pago'}</button>
-            ${canStartSubscription ? '<button class="btn primary" id="subscribe">Activar suscripción</button>' : ''}
-            ${canCancelSubscription ? '<button class="btn secondary" id="cancel-subscription">Cancelar suscripción</button>' : ''}
-            <p class="muted small">Los pagos de pedidos van a la cuenta del café. La suscripción se cobra a la cuenta de Tably.</p>
+      <div class="billing"><span class="pill ${restaurant.subscriptionStatus === 'authorized' ? 'green' : ''}">${subscriptionLabel}</span><div>Plan ${restaurant.plan === 'ampliado' ? 'Ampliado' : 'Base'}</div><div class="billing-price">${money(price)}<span class="muted small"> / mes</span></div>
+            <p class="billing-reminder ${subscriptionOverdue ? 'overdue' : ''}">${esc(subscriptionReminder)}</p>
+            <p class="muted small">Por ahora, el pago del plan se coordina manualmente con Tably. Este aviso aparece cuando ingresás al panel.</p>
           </div></section>
       </div></div>`;
     document.querySelector('#logout').addEventListener('click', async () => {
       await api('/api/auth/logout', { method: 'POST' });
       renderAuth();
-    });
-    document.querySelector('#connect-mp').addEventListener('click', () => { location.href = '/api/mercadopago/connect'; });
-    document.querySelector('#subscribe')?.addEventListener('click', async () => {
-      try {
-        const response = await api('/api/subscriptions/start', { method: 'POST', body: '{}' });
-        location.href = response.checkoutUrl;
-      } catch (error) { toast(error.message); }
-    });
-    document.querySelector('#cancel-subscription')?.addEventListener('click', async () => {
-      if (!await confirmAction('¿Querés cancelar la suscripción de este local?')) return;
-      try { await api('/api/subscriptions/cancel', { method: 'POST', body: '{}' }); await renderDashboard(); }
-      catch (error) { toast(error.message); }
     });
     bindMenuControls();
     bindOrderControls();
@@ -410,6 +400,72 @@ async function renderDashboard() {
   } catch {
     stopDashboardPolling();
     renderAuth();
+  }
+}
+
+function renderPlatformLogin(errorMessage = '') {
+  stopDashboardPolling();
+  topbarMeta.textContent = 'Administración de Tably';
+  app.innerHTML = `<div class="auth-wrap"><section class="panel"><h1>Suscripciones de Tably</h1>
+    <p class="muted small">Ingresá con las credenciales privadas de administración.</p>${errorMessage ? `<p class="error">${esc(errorMessage)}</p>` : ''}
+    <form class="form" id="platform-login-form"><div class="field"><label for="platform-email">Email</label><input id="platform-email" name="email" type="email" required autocomplete="username"></div>
+      <div class="field"><label for="platform-password">Contraseña</label><input id="platform-password" name="password" type="password" required autocomplete="current-password"></div>
+      <button class="btn primary" type="submit">Ingresar</button></form></section></div>`;
+  document.querySelector('#platform-login-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button');
+    busyButton(button, true, 'Ingresar');
+    try {
+      const form = Object.fromEntries(new FormData(event.currentTarget));
+      await api('/api/platform/auth/login', { method: 'POST', body: JSON.stringify(form) });
+      await renderPlatformAdmin();
+    } catch (error) { renderPlatformLogin(error.message); }
+  });
+}
+
+async function renderPlatformAdmin() {
+  stopDashboardPolling();
+  app.innerHTML = '<div class="loading">Cargando suscripciones…</div>';
+  try {
+    const [admin, cafes] = await Promise.all([api('/api/platform/auth/me'), api('/api/platform/subscriptions')]);
+    topbarMeta.innerHTML = `Administración · ${esc(admin.email)} <button class="text-btn" id="platform-logout">Salir</button>`;
+    const statusLabels = { trial: 'Prueba', pending: 'Pago pendiente', authorized: 'Activa', cancelled: 'Cancelada', paused: 'Pausada' };
+    const rows = cafes.map((cafe) => {
+      const due = new Date(cafe.subscriptionDueAt);
+      const dueInput = Number.isNaN(due.getTime()) ? '' : [due.getFullYear(), String(due.getMonth() + 1).padStart(2, '0'), String(due.getDate()).padStart(2, '0')].join('-');
+      const statusOptions = Object.entries(statusLabels).map(([value, label]) => `<option value="${value}" ${cafe.subscriptionStatus === value ? 'selected' : ''}>${label}</option>`).join('');
+      return `<article class="section platform-cafe" data-cafe-id="${cafe.id}"><div class="section-head"><div><h2>${esc(cafe.name)}</h2><span class="muted small">${esc(cafe.email)} · ${cafe.tableCount} mesas · Plan ${cafe.plan === 'ampliado' ? 'Ampliado' : 'Base'}</span></div><span class="pill">${statusLabels[cafe.subscriptionStatus] || 'Sin estado'}</span></div>
+        <div class="platform-billing-controls"><label class="field"><span>Estado</span><select name="status">${statusOptions}</select></label>
+          <label class="field"><span>Vencimiento</span><input name="dueAt" type="date" value="${dueInput}" required></label>
+          <div class="platform-actions"><button class="btn secondary small-btn" data-save-subscription="${cafe.id}">Guardar</button><button class="btn green small-btn" data-mark-paid="${cafe.id}">Registrar pago</button></div></div>
+        <p class="muted small">${cafe.subscriptionPaidAt ? `Último pago registrado: ${new Intl.DateTimeFormat('es-AR', { dateStyle: 'medium' }).format(new Date(cafe.subscriptionPaidAt))}` : 'Todavía no hay pagos registrados.'}</p></article>`;
+    }).join('');
+    app.innerHTML = `<div class="platform-admin"><div class="heading-row"><div><h1>Suscripciones de los cafés</h1><p>Controlá estados, vencimientos y pagos manuales.</p></div><span class="pill">${cafes.length} cafés</span></div>
+      <div class="platform-cafe-list">${rows || '<section class="section empty">Todavía no hay cafés registrados.</section>'}</div></div>`;
+    document.querySelector('#platform-logout').addEventListener('click', async () => {
+      await api('/api/auth/logout', { method: 'POST' });
+      renderPlatformLogin();
+    });
+    document.querySelectorAll('[data-save-subscription]').forEach((button) => button.addEventListener('click', async () => {
+      const card = button.closest('[data-cafe-id]');
+      try {
+        await api(`/api/platform/subscriptions/${button.dataset.saveSubscription}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: card.querySelector('[name="status"]').value, dueAt: `${card.querySelector('[name="dueAt"]').value}T12:00:00.000Z` }),
+        });
+        await renderPlatformAdmin();
+      } catch (error) { toast(error.message); }
+    }));
+    document.querySelectorAll('[data-mark-paid]').forEach((button) => button.addEventListener('click', async () => {
+      if (!await confirmAction('¿Confirmás que recibiste el pago de este café?')) return;
+      try {
+        await api(`/api/platform/subscriptions/${button.dataset.markPaid}/paid`, { method: 'POST', body: '{}' });
+        await renderPlatformAdmin();
+      } catch (error) { toast(error.message); }
+    }));
+  } catch (error) {
+    if (/administrador|administrar|permiso|sesión|sesion/i.test(error.message)) renderPlatformLogin();
+    else app.innerHTML = `<section class="panel"><p>${esc(error.message)}</p></section>`;
   }
 }
 
@@ -425,7 +481,7 @@ async function renderMenu(slug) {
   const paymentStorageKey = `tably-payment:${slug}:${table}`;
   let selectedPayment;
   try { selectedPayment = sessionStorage.getItem(paymentStorageKey); } catch {}
-  if (!['mercadopago', 'card', 'cash'].includes(selectedPayment)) selectedPayment = 'mercadopago';
+  if (!['card', 'cash'].includes(selectedPayment)) selectedPayment = 'cash';
   let screen = 'menu';
   const categories = [...new Set(menu.items.map((item) => item.category))];
   const menuHtml = categories.map((category) => `<section><div class="section-head"><h2>${esc(category)}</h2></div>
@@ -486,11 +542,10 @@ async function renderMenu(slug) {
           <h2>Elegí cómo pagar</h2>
           <fieldset class="payment-options">
             <legend>Método de pago</legend>
-            <label class="payment-option"><input type="radio" name="paymentMethod" value="mercadopago" ${selectedPayment === 'mercadopago' ? 'checked' : ''}><span><strong>Mercado Pago</strong><small>Al confirmarse el pago, el pedido se envía a cocina. Si volvés sin pagar, no se prepara.</small></span></label>
-            <label class="payment-option"><input type="radio" name="paymentMethod" value="card" ${selectedPayment === 'card' ? 'checked' : ''}><span><strong>Tarjeta</strong><small>El personal se acerca a tu mesa con el posnet.</small></span></label>
-            <label class="payment-option"><input type="radio" name="paymentMethod" value="cash" ${selectedPayment === 'cash' ? 'checked' : ''}><span><strong>Efectivo</strong><small>El personal se acerca a cobrarte a la mesa.</small></span></label>
+            <label class="payment-option"><input type="radio" name="paymentMethod" value="cash" ${selectedPayment === 'cash' ? 'checked' : ''}><span><strong>Efectivo</strong><small>Un camarero se acerca a tu mesa para cobrarte.</small></span></label>
+            <label class="payment-option"><input type="radio" name="paymentMethod" value="card" ${selectedPayment === 'card' ? 'checked' : ''}><span><strong>Mercado Pago o tarjeta</strong><small>Un camarero se acerca a tu mesa para cobrarte con QR o posnet.</small></span></label>
           </fieldset>
-          <button class="btn primary pay-confirm" id="place-order">Pagar ${money(total)}</button>
+          <button class="btn primary pay-confirm" id="place-order">Solicitar cobro ${money(total)}</button>
         </section>
       </div>
     </section>`;
@@ -510,14 +565,11 @@ async function renderMenu(slug) {
           body: JSON.stringify({ table, method: selectedPayment, items: items.map((item) => ({ id: item.id, quantity: item.quantity })) }),
         });
         cart.clear();
-        if (order.checkoutUrl) location.href = order.checkoutUrl;
-        else {
-          const next = new URL(location.href);
-          next.searchParams.set('order_id', order.id);
-          history.replaceState({}, '', next);
-          window.removeEventListener('popstate', handleCheckoutPopState);
-          await renderOrderStatus(order.id, slug, table);
-        }
+        const next = new URL(location.href);
+        next.searchParams.set('order_id', order.id);
+        history.replaceState({}, '', next);
+        window.removeEventListener('popstate', handleCheckoutPopState);
+        await renderOrderStatus(order.id, slug, table);
       } catch (error) { toast(error.message); busyButton(button, false, label); }
     });
   }
@@ -546,23 +598,18 @@ async function renderOrderStatus(orderId, slug, table) {
     const statusText = { received: 'Recibido', preparing: 'Preparando', ready: 'Listo', delivered: 'Entregado' }[order.orderStatus] || 'Recibido';
     const snapshot = JSON.stringify(order);
     if (snapshot === lastOrderSnapshot) return isPaid && order.orderStatus === 'delivered';
-    const waitingForMp = order.paymentMethod === 'mercadopago' && order.paymentStatus === 'pending';
     const rejectedPayment = order.paymentStatus === 'rejected';
-    const orderHeading = order.paymentMethod !== 'mercadopago' && !isPaid
-      ? 'El personal se acerca a tu mesa'
+    const orderHeading = rejectedPayment
+      ? 'No se confirmó el pago'
       : isPaid
         ? 'Tu pedido está en marcha'
-        : rejectedPayment
-          ? 'No se confirmó el pago'
-          : 'Esperando confirmación de Mercado Pago';
+        : 'El personal se acerca a tu mesa';
     const headline = orderHeading;
     const message = isPaid
       ? statusText
       : rejectedPayment
         ? 'El pedido no se envió a cocina. Volvé al menú para realizar otro pedido.'
-        : waitingForMp
-          ? 'Si saliste de Mercado Pago antes de terminar, todavía no hay un pago confirmado. No enviaremos el pedido a cocina hasta recibir la confirmación segura de Mercado Pago.'
-          : `El local recibió el aviso para cobrar ${money(order.totalArs)} en tu mesa.`;
+        : `El local recibió el aviso para cobrar ${money(order.totalArs)} en tu mesa. Podés pagar en efectivo o con Mercado Pago/tarjeta.`;
     app.innerHTML = `<section class="panel customer status"><span class="pill ${isPaid ? 'green' : rejectedPayment ? 'collection-needed' : ''}">${isPaid ? statusText : rejectedPayment ? 'Pago rechazado' : 'Pedido registrado'}</span>
       <h2 style="margin-top:16px">${headline}</h2>
       <p class="muted">Mesa ${order.tableNumber} · Total ${money(order.totalArs)}</p>
@@ -583,8 +630,7 @@ async function renderOrderStatus(orderId, slug, table) {
 
 const path = location.pathname;
 const route = path.match(/^\/menu\/([^/]+)\/?$/);
-const mpResult = new URLSearchParams(location.search).get('mp');
+const platformAdminMode = path === '/platform-admin' || new URLSearchParams(location.search).has('tably-admin');
 if (route) renderMenu(decodeURIComponent(route[1]));
-else if (mpResult === 'connected') renderDashboard().then(() => toast('Cuenta de Mercado Pago vinculada.'));
-else if (mpResult === 'error') api('/api/auth/me').then(() => renderDashboard()).then(() => toast('No se completó la vinculación. Podés volver a intentarlo desde el panel.')).catch(() => renderAuth());
+else if (platformAdminMode) renderPlatformAdmin();
 else api('/api/auth/me').then(renderDashboard).catch(() => renderAuth());

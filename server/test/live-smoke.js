@@ -51,7 +51,7 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ table: 1, method: 'cash', items: [{ id: menu[0].id, quantity: 1 }] }),
   });
-  await request(`/api/admin/orders/${order.id}/cash-payment`, {
+  await request(`/api/admin/orders/${order.id}/collect-payment`, {
     method: 'POST',
     headers: { ...authHeaders, 'content-type': 'application/json' },
     body: '{}',
