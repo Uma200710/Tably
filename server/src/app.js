@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -13,7 +12,7 @@ import { query } from './db.js';
 import { issuePlatformSession, issueSession, requireAuth, requirePlatformAdmin } from './security.js';
 
 const app = express();
-const root = fileURLToPath(new URL('../../', import.meta.url));
+const root = process.cwd();
 const webRoot = path.join(root, 'web');
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-7' });
 const registerSchema = z.object({
