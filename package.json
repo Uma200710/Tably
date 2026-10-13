@@ -26,6 +26,7 @@
     "mercadopago": "^3.6.1",
     "pg": "^8.16.3",
     "qrcode": "^1.5.4",
+    "serverless-http": "^4.0.0",
     "zod": "^4.0.5"
   }
 }

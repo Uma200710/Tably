@@ -1,0 +1,27 @@
+[build]
+  command = "npm ci --omit=dev"
+  publish = "web"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["express"]
+  included_files = ["server/sql/001_initial.sql"]
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/platform-admin"
+  to = "/index.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/menu/*"
+  to = "/index.html"
+  status = 200
+  force = true

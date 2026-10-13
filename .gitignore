@@ -2,4 +2,3 @@ node_modules/
 .env
 coverage/
 *.log
-.env.example

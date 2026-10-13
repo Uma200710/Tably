@@ -29,4 +29,4 @@ Configura `PLATFORM_ADMIN_EMAIL` y `PLATFORM_ADMIN_PASSWORD` como variables priv
 
 ## Despliegue
 
-`render.yaml` configura un servicio web y una base PostgreSQL con planes pagos. Revisa los precios de Render antes de crear los recursos. Para publicar Tably se necesita un servicio Node.js, una base PostgreSQL persistente, `DATABASE_URL`, `JWT_SECRET` y una URL pública HTTPS configurada como `PUBLIC_URL`.
+`render.yaml` configura un servicio web y una base PostgreSQL con planes pagos. Para el plan gratuito de Netlify, el proyecto usa una función para la API y publica `web/` como sitio estático. Configura `DATABASE_URL` (PostgreSQL), `JWT_SECRET`, `PLATFORM_ADMIN_EMAIL` y `PLATFORM_ADMIN_PASSWORD` en las variables privadas del sitio. Netlify proporciona la URL pública como `URL`; la función la usa para construir enlaces y validar el origen. La base de datos se inicializa al recibir la primera solicitud.
