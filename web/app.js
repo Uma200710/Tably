@@ -39,6 +39,39 @@ function toast(message) {
   toastTimer = setTimeout(() => element.classList.remove('show'), 2600);
 }
 
+function confirmAction(message) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'confirm-dialog';
+    const text = document.createElement('p');
+    text.textContent = message;
+    const actions = document.createElement('div');
+    actions.className = 'confirm-actions';
+    const cancel = document.createElement('button');
+    cancel.className = 'btn secondary';
+    cancel.type = 'button';
+    cancel.textContent = 'Cancelar';
+    const confirm = document.createElement('button');
+    confirm.className = 'btn primary';
+    confirm.type = 'button';
+    confirm.textContent = 'Confirmar';
+    actions.append(cancel, confirm);
+    dialog.append(text, actions);
+    dialog.addEventListener('close', () => {
+      resolve(dialog.returnValue === 'confirm');
+      dialog.remove();
+    }, { once: true });
+    cancel.addEventListener('click', () => dialog.close('cancel'));
+    confirm.addEventListener('click', () => dialog.close('confirm'));
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) dialog.close('cancel');
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, {
     credentials: 'same-origin',
@@ -209,7 +242,7 @@ function bindMenuEditForm(form) {
   });
   form.querySelector('[data-menu-delete]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
-    if (!confirm('¿Eliminar este producto del menú? Los pedidos anteriores no cambian.')) return;
+    if (!await confirmAction('¿Eliminar este producto del menú? Los pedidos anteriores no cambian.')) return;
     button.disabled = true;
     try {
       await api(`/api/admin/menu/${form.dataset.menuId}`, { method: 'DELETE' });
@@ -366,7 +399,7 @@ async function renderDashboard() {
       } catch (error) { toast(error.message); }
     });
     document.querySelector('#cancel-subscription')?.addEventListener('click', async () => {
-      if (!confirm('¿Querés cancelar la suscripción de este local?')) return;
+      if (!await confirmAction('¿Querés cancelar la suscripción de este local?')) return;
       try { await api('/api/subscriptions/cancel', { method: 'POST', body: '{}' }); await renderDashboard(); }
       catch (error) { toast(error.message); }
     });
