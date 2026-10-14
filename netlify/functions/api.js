@@ -20,7 +20,9 @@ export async function handler(event, context) {
     import('../../server/src/app.js'),
     import('../../server/src/db.js'),
   ]);
-  proxy ||= serverless(app);
+  // Preserve binary responses such as the table QR PNGs through Netlify's
+  // serverless event format instead of decoding them as UTF-8 text.
+  proxy ||= serverless(app, { binary: ['image/png'] });
   initializeDatabase ||= readFile(
     path.join(process.cwd(), 'server/sql/001_initial.sql'),
     'utf8',
