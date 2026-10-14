@@ -560,10 +560,15 @@ async function renderMenu(slug) {
           <h2>Elegí cómo pagar</h2>
           <fieldset class="payment-options">
             <legend>Método de pago</legend>
-            <label class="payment-option"><input type="radio" name="paymentMethod" value="cash" ${selectedPayment === 'cash' ? 'checked' : ''}><span><strong>Efectivo</strong><small>Un camarero se acerca a tu mesa para cobrarte.</small></span></label>
-            <label class="payment-option"><input type="radio" name="paymentMethod" value="card" ${selectedPayment === 'card' ? 'checked' : ''}><span><strong>Mercado Pago o tarjeta</strong><small>Un camarero se acerca a tu mesa para cobrarte con QR o posnet.</small></span></label>
+            <label class="payment-option"><input type="radio" name="paymentMethod" value="cash" ${selectedPayment === 'cash' ? 'checked' : ''}><span><strong>Efectivo</strong></span></label>
+            <label class="payment-option"><input type="radio" name="paymentMethod" value="card" ${selectedPayment === 'card' ? 'checked' : ''}><span><strong>Mercado Pago o tarjeta</strong></span></label>
           </fieldset>
-          <button class="btn primary pay-confirm" id="place-order">Solicitar cobro ${money(total)}</button>
+          <button class="btn primary pay-confirm" id="place-order">Pagar ${money(total)}</button>
+          <div class="payment-explanation" id="payment-explanation" hidden>
+            <p id="payment-explanation-text"></p>
+            <button class="btn primary pay-confirm" id="confirm-order">Confirmar pedido ${money(total)}</button>
+            <button class="checkout-back payment-back" id="edit-payment" type="button">Volver</button>
+          </div>
         </section>
       </div>
     </section>`;
@@ -573,7 +578,18 @@ async function renderMenu(slug) {
       selectedPayment = radio.value;
       try { sessionStorage.setItem(paymentStorageKey, selectedPayment); } catch {}
     }));
-    document.querySelector('#place-order').addEventListener('click', async (event) => {
+    document.querySelector('#place-order').addEventListener('click', () => {
+      document.querySelector('#payment-explanation-text').textContent = `Al confirmar, el local recibirá tu pedido y un camarero se acercará a tu mesa para cobrarte ${selectedPayment === 'cash' ? 'en efectivo' : 'con QR o posnet'}.`;
+      document.querySelector('#place-order').hidden = true;
+      document.querySelector('.payment-options').hidden = true;
+      document.querySelector('#payment-explanation').hidden = false;
+    });
+    document.querySelector('#edit-payment').addEventListener('click', () => {
+      document.querySelector('#payment-explanation').hidden = true;
+      document.querySelector('.payment-options').hidden = false;
+      document.querySelector('#place-order').hidden = false;
+    });
+    document.querySelector('#confirm-order').addEventListener('click', async (event) => {
       const button = event.currentTarget;
       const label = button.textContent;
       busyButton(button, true, label);

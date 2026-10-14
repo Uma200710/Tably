@@ -192,6 +192,9 @@ a { color: inherit; }
 .payment-panel h2 { margin: 0 0 16px; font: 600 23px 'Fraunces', serif; }
 .payment-panel .payment-options { margin: 0 0 16px; }
 .payment-panel .pay-confirm { width: 100%; min-height: 48px; }
+.payment-explanation { padding: 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--ink); }
+.payment-explanation p { margin: 0 0 14px; line-height: 1.55; }
+.payment-explanation .payment-back { display: block; margin: 10px auto 0; }
 .checkout { position: sticky; bottom: 12px; margin-top: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
 .checkout-total { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: 12px; }
 .checkout .field { margin: 10px 0; }
