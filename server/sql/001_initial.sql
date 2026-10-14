@@ -56,6 +56,28 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE INDEX IF NOT EXISTS orders_restaurant_created_idx ON orders(restaurant_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS restaurant_tables (
+  restaurant_id UUID NOT NULL REFERENCES restaurants(id) ON DELETE CASCADE,
+  table_number INTEGER NOT NULL CHECK (table_number BETWEEN 1 AND 200),
+  is_occupied BOOLEAN NOT NULL DEFAULT FALSE,
+  occupied_at TIMESTAMPTZ,
+  PRIMARY KEY (restaurant_id, table_number)
+);
+
+INSERT INTO restaurant_tables (restaurant_id, table_number, is_occupied, occupied_at)
+SELECT restaurants.id, table_numbers.table_number,
+       active_orders.occupied_at IS NOT NULL, active_orders.occupied_at
+FROM restaurants
+CROSS JOIN LATERAL generate_series(1, restaurants.table_count) AS table_numbers(table_number)
+LEFT JOIN (
+  SELECT restaurant_id, table_number, MIN(created_at) AS occupied_at
+  FROM orders
+  WHERE order_status IN ('received', 'preparing', 'ready') OR payment_status = 'pending'
+  GROUP BY restaurant_id, table_number
+) AS active_orders ON active_orders.restaurant_id = restaurants.id
+  AND active_orders.table_number = table_numbers.table_number
+ON CONFLICT (restaurant_id, table_number) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
   restaurant_id UUID NOT NULL REFERENCES restaurants(id) ON DELETE CASCADE,

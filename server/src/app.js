@@ -8,7 +8,7 @@ import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import QRCode from 'qrcode';
 import { z } from 'zod';
-import { query } from './db.js';
+import { pool, query } from './db.js';
 import { issuePlatformSession, issueSession, requireAuth, requirePlatformAdmin } from './security.js';
 
 const app = express();
@@ -25,16 +25,30 @@ const registerSchema = z.object({
 const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1).max(72) });
 const platformLoginSchema = z.object({ email: z.string().trim().email().max(254), password: z.string().min(1).max(256) });
 const menuItemSchema = z.object({
-  category: z.string().trim().min(1).max(40),
-  name: z.string().trim().min(1).max(100),
-  description: z.string().trim().max(240).default(''),
+  category: z.string().trim().min(1).max(40).transform((value) => value.normalize('NFC')),
+  name: z.string().trim().min(1).max(100).transform((value) => value.normalize('NFC')),
+  description: z.string().trim().max(240).default('').transform((value) => value.normalize('NFC')),
   priceArs: z.coerce.number().int().min(1).max(100_000_000),
   active: z.boolean().default(true),
 });
+const menuImportSchema = z.object({ items: z.array(menuItemSchema).min(1).max(200) });
 
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'same-site' } }));
-app.use(express.json({ limit: '64kb' }));
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'same-site' },
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      'script-src': ["'self'", "'wasm-unsafe-eval'", 'https://cdn.jsdelivr.net', 'https://cdn.sheetjs.com'],
+      'worker-src': ["'self'", 'blob:', 'https://cdn.jsdelivr.net'],
+      'connect-src': ["'self'", 'https://cdn.jsdelivr.net', 'https://cdn.sheetjs.com'],
+      'img-src': ["'self'", 'data:', 'blob:'],
+      'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+    },
+  },
+}));
+app.use(express.json({ limit: '512kb' }));
 app.use(cookieParser());
 app.use((req, res, next) => {
   const origin = req.get('origin');
@@ -99,13 +113,18 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   const slug = `${slugify(name) || 'cafe'}-${randomBytes(3).toString('hex')}`;
   const passwordHash = await bcrypt.hash(password, 12);
   const plan = tableCount > 15 ? 'ampliado' : 'base';
-  const client = await (await import('./db.js')).pool.connect();
+  const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(
       `INSERT INTO restaurants (id, slug, name, email, password_hash, table_count, plan)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [restaurantId, slug, name, email.toLowerCase(), passwordHash, tableCount, plan],
+    );
+    await client.query(
+      `INSERT INTO restaurant_tables (restaurant_id, table_number)
+       SELECT $1, generate_series(1, $2)`,
+      [restaurantId, tableCount],
     );
     const seed = [
       ['Café', 'Espresso', 'Doble, tueste medio', 3200],
@@ -284,11 +303,27 @@ app.post('/api/public/:slug/orders', async (req, res) => {
   if (total <= 0) return res.status(400).json({ error: 'El total del pedido no es válido.' });
 
   const orderId = randomUUID();
-  await query(
-    `INSERT INTO orders (id, restaurant_id, table_number, payment_method, items, total_ars)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [orderId, restaurant.id, table, method, JSON.stringify(items), total],
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO orders (id, restaurant_id, table_number, payment_method, items, total_ars)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [orderId, restaurant.id, table, method, JSON.stringify(items), total],
+    );
+    const tableResult = await client.query(
+      `UPDATE restaurant_tables SET is_occupied = TRUE, occupied_at = COALESCE(occupied_at, NOW())
+       WHERE restaurant_id = $1 AND table_number = $2 RETURNING table_number`,
+      [restaurant.id, table],
+    );
+    if (!tableResult.rowCount) throw new Error('No encontramos la mesa del pedido.');
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
   res.status(201).json({ id: orderId });
 });
 
@@ -336,6 +371,22 @@ app.post('/api/admin/menu', requireAuth, async (req, res) => {
     [randomUUID(), req.restaurantId, item.category, item.name, item.description, item.priceArs, item.active],
   );
   res.status(201).json(result.rows[0]);
+});
+
+app.post('/api/admin/menu/import', requireAuth, async (req, res) => {
+  const parsed = menuImportSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Revisá los productos importados: se admiten hasta 200 con nombre, categoría y precio válidos.' });
+  const items = parsed.data.items.map((item) => ({ ...item, id: randomUUID() }));
+  const result = await query(
+    `INSERT INTO menu_items (id, restaurant_id, category, name, description, price_ars, active)
+     SELECT imported.id::uuid, $1, imported.category, imported.name, imported.description, imported.price_ars, TRUE
+     FROM jsonb_to_recordset($2::jsonb) AS imported(
+       id text, category text, name text, description text, price_ars integer
+     )
+     RETURNING id, category, name, description, price_ars AS "priceArs", active`,
+    [req.restaurantId, JSON.stringify(items)],
+  );
+  res.status(201).json({ items: result.rows, imported: result.rowCount });
 });
 
 app.patch('/api/admin/menu/:id', requireAuth, async (req, res) => {
@@ -388,15 +439,32 @@ app.patch('/api/admin/orders/:id/status', requireAuth, async (req, res) => {
 });
 
 app.get('/api/admin/tables', requireAuth, async (req, res) => {
-  const result = await query('SELECT slug, table_count FROM restaurants WHERE id = $1', [req.restaurantId]);
-  const restaurant = result.rows[0];
-  if (!restaurant) return res.status(404).json({ error: 'No encontramos el local.' });
-  res.json(Array.from({ length: restaurant.table_count }, (_, index) => {
-    const table = index + 1;
-    const url = new URL(`/menu/${restaurant.slug}`, process.env.PUBLIC_URL);
-    url.searchParams.set('table', table);
-    return { table, url: url.href, qrUrl: `/api/admin/tables/${table}/qr.png` };
+  const result = await query(
+    `SELECT tables.table_number AS table, tables.is_occupied AS occupied,
+            restaurants.slug, tables.occupied_at AS "occupiedAt"
+     FROM restaurant_tables AS tables
+     JOIN restaurants ON restaurants.id = tables.restaurant_id
+     WHERE tables.restaurant_id = $1 ORDER BY tables.table_number`,
+    [req.restaurantId],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'No encontramos las mesas del local.' });
+  res.json(result.rows.map((row) => {
+    const url = new URL(`/menu/${row.slug}`, process.env.PUBLIC_URL);
+    url.searchParams.set('table', row.table);
+    return { table: row.table, occupied: row.occupied, occupiedAt: row.occupiedAt, url: url.href, qrUrl: `/api/admin/tables/${row.table}/qr.png` };
   }));
+});
+
+app.post('/api/admin/tables/:table/clear', requireAuth, async (req, res) => {
+  const table = Number(req.params.table);
+  if (!Number.isInteger(table) || table < 1 || table > 200) return res.status(400).json({ error: 'La mesa no es válida.' });
+  const result = await query(
+    `UPDATE restaurant_tables SET is_occupied = FALSE, occupied_at = NULL
+     WHERE restaurant_id = $1 AND table_number = $2 RETURNING table_number AS table`,
+    [req.restaurantId, table],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'No encontramos esa mesa.' });
+  res.json({ table: result.rows[0].table, occupied: false });
 });
 
 app.get('/api/admin/tables/:table/qr.png', requireAuth, async (req, res) => {

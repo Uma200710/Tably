@@ -1,3 +1,5 @@
+import { markExistingProducts, parseMenuFile } from './menu-importer.js';
+
 const app = document.querySelector('#app');
 const topbarMeta = document.querySelector('#topbar-meta');
 const themeToggle = document.querySelector('#theme-toggle');
@@ -5,6 +7,7 @@ const money = (amount) => new Intl.NumberFormat('es-AR', { style: 'currency', cu
 const esc = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 let toastTimer;
 let dashboardOrdersSnapshot = '';
+let dashboardTablesSnapshot = '';
 let dashboardOrdersRefresh = null;
 
 function setTheme(theme, persist = true) {
@@ -286,6 +289,103 @@ function bindMenuControls() {
   syncMenuSaveAll();
 }
 
+function showMenuImportPreview(products, fileName, method) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'menu-import-dialog';
+  const selectedCount = products.filter((item) => item.selected).length;
+  dialog.innerHTML = `<div class="import-dialog-head"><div><span class="muted small">${esc(method)} · ${products.length} productos detectados</span><h2>Revisá el menú</h2></div><button class="dialog-close" type="button" aria-label="Cerrar">×</button></div>
+    <p class="import-privacy">${esc(fileName)}. El archivo se analizó en este dispositivo. Solo se guardan los productos que confirmes.</p>
+    <div class="import-toolbar"><label><input type="checkbox" id="import-select-all" ${selectedCount === products.filter((item) => !item.duplicate).length ? 'checked' : ''}> Seleccionar todos los productos nuevos</label><span class="muted small" id="import-selection-count">${selectedCount} seleccionados</span></div>
+    <div class="import-table-wrap"><table class="import-table"><thead><tr><th>Agregar</th><th>Categoría</th><th>Producto</th><th>Descripción</th><th>Precio (ARS)</th></tr></thead>
+      <tbody>${products.map((item, index) => `<tr data-import-row="${index}" class="${item.duplicate ? 'is-duplicate' : ''}">
+        <td><input type="checkbox" data-import-select ${item.selected ? 'checked' : ''} ${item.duplicate ? 'disabled' : ''} aria-label="${item.duplicate ? 'Ya existe en el menú' : 'Importar producto'}"></td>
+        <td><input data-import-field="category" value="${esc(item.category)}" maxlength="40" aria-label="Categoría" ${item.duplicate ? 'disabled' : ''}></td>
+        <td><input data-import-field="name" value="${esc(item.name)}" maxlength="100" aria-label="Producto" ${item.duplicate ? 'disabled' : ''}><small>${item.duplicate ? 'Ya existe en el menú; se omitirá.' : ''}</small></td>
+        <td><input data-import-field="description" value="${esc(item.description)}" maxlength="240" aria-label="Descripción" ${item.duplicate ? 'disabled' : ''}></td>
+        <td><input data-import-field="priceArs" type="number" min="1" step="1" value="${item.priceArs}" aria-label="Precio" ${item.duplicate ? 'disabled' : ''}></td>
+      </tr>`).join('')}</tbody></table></div>
+    <div class="import-dialog-actions"><button class="btn secondary" type="button" data-import-cancel>Cancelar</button><button class="btn primary" type="button" data-import-save>${selectedCount ? `Importar ${selectedCount} productos` : 'Importar productos'}</button></div>`;
+  document.body.append(dialog);
+
+  const selectAll = dialog.querySelector('#import-select-all');
+  const selectionCount = dialog.querySelector('#import-selection-count');
+  const saveButton = dialog.querySelector('[data-import-save]');
+  const refreshSelection = () => {
+    const count = dialog.querySelectorAll('[data-import-select]:checked:not(:disabled)').length;
+    selectionCount.textContent = `${count} seleccionados`;
+    saveButton.textContent = count ? `Importar ${count} productos` : 'Importar productos';
+    saveButton.disabled = count === 0;
+    const eligible = [...dialog.querySelectorAll('[data-import-select]:not(:disabled)')];
+    selectAll.checked = eligible.length > 0 && eligible.every((checkbox) => checkbox.checked);
+    selectAll.indeterminate = !selectAll.checked && eligible.some((checkbox) => checkbox.checked);
+  };
+
+  dialog.querySelectorAll('[data-import-select]').forEach((checkbox) => checkbox.addEventListener('change', refreshSelection));
+  selectAll.addEventListener('change', () => {
+    dialog.querySelectorAll('[data-import-select]:not(:disabled)').forEach((checkbox) => { checkbox.checked = selectAll.checked; });
+    refreshSelection();
+  });
+  dialog.querySelector('.dialog-close').addEventListener('click', () => dialog.close());
+  dialog.querySelector('[data-import-cancel]').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  refreshSelection();
+  dialog.showModal();
+
+  saveButton.addEventListener('click', async () => {
+    const selected = [...dialog.querySelectorAll('[data-import-row]')]
+      .filter((row) => row.querySelector('[data-import-select]').checked)
+      .map((row) => ({
+        category: row.querySelector('[data-import-field="category"]').value.trim(),
+        name: row.querySelector('[data-import-field="name"]').value.trim(),
+        description: row.querySelector('[data-import-field="description"]').value.trim(),
+        priceArs: Number(row.querySelector('[data-import-field="priceArs"]').value),
+      }));
+    if (!selected.length) return;
+    saveButton.disabled = true;
+    saveButton.textContent = 'Guardando…';
+    try {
+      const result = await api('/api/admin/menu/import', { method: 'POST', body: JSON.stringify({ items: selected }) });
+      const list = document.querySelector('#menu-admin');
+      list.insertAdjacentHTML('beforeend', result.items.map(menuItemHtml).join(''));
+      list.querySelectorAll('.menu-edit:not([data-bound="true"])').forEach(bindMenuEditForm);
+      syncMenuSaveAll();
+      dialog.close();
+      toast(`Se importaron ${result.imported} productos al menú.`);
+    } catch (error) {
+      saveButton.disabled = false;
+      saveButton.textContent = `Importar ${selected.length} productos`;
+      toast(error.message);
+    }
+  });
+}
+
+function bindMenuImport() {
+  const fileInput = document.querySelector('#menu-import-file');
+  const trigger = document.querySelector('#menu-import-trigger');
+  const status = document.querySelector('#menu-import-status');
+  trigger.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    trigger.disabled = true;
+    status.textContent = 'Analizando el archivo…';
+    try {
+      const { products, method } = await parseMenuFile(file, (message) => { status.textContent = message; });
+      const existing = await api('/api/admin/menu');
+      const prepared = markExistingProducts(products, existing);
+      status.textContent = `${prepared.length} productos listos para revisar.`;
+      showMenuImportPreview(prepared, file.name, method);
+    } catch (error) {
+      status.textContent = 'No se pudo leer el archivo.';
+      toast(error.message);
+    } finally {
+      trigger.disabled = false;
+      fileInput.value = '';
+    }
+  });
+}
+
 function bindOrderControls() {
   document.querySelectorAll('[data-collect-paid]').forEach((button) => button.addEventListener('click', async () => {
     button.disabled = true;
@@ -304,33 +404,78 @@ function bindOrderControls() {
   }));
 }
 
+function updateTableOccupancy(tables) {
+  let occupied = 0;
+  for (const table of tables) {
+    const card = document.querySelector(`[data-table-card="${table.table}"]`);
+    if (!card) continue;
+    const badge = card.querySelector('[data-table-status]');
+    const clearButton = card.querySelector('[data-clear-table]');
+    badge.textContent = table.occupied ? 'Ocupada' : 'Libre';
+    badge.classList.toggle('green', !table.occupied);
+    badge.classList.toggle('occupied', table.occupied);
+    clearButton.hidden = !table.occupied;
+    clearButton.disabled = false;
+    if (table.occupied) occupied += 1;
+  }
+  const count = document.querySelector('[data-tables-count]');
+  if (count) count.textContent = `${occupied} ocupadas`;
+}
+
+function bindTableControls() {
+  document.querySelectorAll('[data-clear-table]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await api(`/api/admin/tables/${button.dataset.clearTable}/clear`, { method: 'POST', body: '{}' });
+      await refreshDashboardOrders();
+    } catch (error) { button.disabled = false; toast(error.message); }
+  }));
+}
+
+function setDashboardTab(tab) {
+  document.querySelectorAll('[data-dashboard-tab]').forEach((button) => {
+    const active = button.dataset.dashboardTab === tab;
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('[data-dashboard-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.dashboardPanel !== tab;
+  });
+  try { localStorage.setItem('tably-dashboard-tab', tab); } catch {}
+}
+
 async function refreshDashboardOrders() {
   if (dashboardOrdersRefresh) await dashboardOrdersRefresh;
   const list = document.querySelector('#orders-list');
   if (!list || document.hidden) return;
 
   const refresh = (async () => {
-    const orders = await api('/api/admin/orders');
+    const [orders, tables] = await Promise.all([api('/api/admin/orders'), api('/api/admin/tables')]);
     const snapshot = JSON.stringify(orders);
-    if (snapshot === dashboardOrdersSnapshot) return;
+    if (snapshot !== dashboardOrdersSnapshot) {
+      const scrollY = window.scrollY;
+      const focusedButton = list.contains(document.activeElement) ? document.activeElement : null;
+      const focusedAction = focusedButton?.dataset.collectPaid
+        ? ['collectPaid', focusedButton.dataset.collectPaid]
+        : focusedButton?.dataset.nextStatus
+          ? ['nextStatus', focusedButton.dataset.nextStatus]
+          : null;
+      list.innerHTML = orderListHtml(orders);
+      document.querySelector('[data-orders-count]').textContent = `${orders.length} pedidos`;
+      dashboardOrdersSnapshot = snapshot;
+      bindOrderControls();
 
-    const scrollY = window.scrollY;
-    const focusedButton = list.contains(document.activeElement) ? document.activeElement : null;
-    const focusedAction = focusedButton?.dataset.collectPaid
-      ? ['collectPaid', focusedButton.dataset.collectPaid]
-      : focusedButton?.dataset.nextStatus
-        ? ['nextStatus', focusedButton.dataset.nextStatus]
-        : null;
-    list.innerHTML = orderListHtml(orders);
-    document.querySelector('[data-orders-count]').textContent = `${orders.length} pedidos`;
-    dashboardOrdersSnapshot = snapshot;
-    bindOrderControls();
-
-    if (focusedAction) {
-      const target = [...list.querySelectorAll('button')].find((button) => button.dataset[focusedAction[0]] === focusedAction[1]);
-      target?.focus({ preventScroll: true });
+      if (focusedAction) {
+        const target = [...list.querySelectorAll('button')].find((button) => button.dataset[focusedAction[0]] === focusedAction[1]);
+        target?.focus({ preventScroll: true });
+      }
+      window.scrollTo({ top: scrollY, behavior: 'instant' });
     }
-    window.scrollTo({ top: scrollY, behavior: 'instant' });
+    const tablesSnapshot = JSON.stringify(tables.map(({ table, occupied, occupiedAt }) => ({ table, occupied, occupiedAt })));
+    if (tablesSnapshot !== dashboardTablesSnapshot) {
+      dashboardTablesSnapshot = tablesSnapshot;
+      updateTableOccupancy(tables);
+    }
   })();
 
   dashboardOrdersRefresh = refresh;
@@ -368,41 +513,80 @@ async function renderDashboard() {
         : restaurant.subscriptionStatus === 'pending'
           ? `El pago está pendiente de verificación. El servicio se activará una vez confirmado.`
           : `El estado del servicio se actualizará una vez verificado el pago. Vencimiento: ${dueDateText}.`;
-    const tableCards = tables.map((table) => `<article class="table">
-      <div class="table-actions"><b>Mesa ${table.table}</b><a class="text-btn small" href="${esc(table.qrUrl)}" download="tably-${restaurant.slug}-mesa-${table.table}.png">Descargar QR</a></div>
-      <img src="${esc(table.qrUrl)}" alt="QR para la mesa ${table.table}">
-      <a href="${esc(table.url)}" target="_blank" rel="noreferrer">${esc(table.url)}</a>
+    const tableCards = tables.map((table) => `<article class="table" data-table-card="${table.table}">
+      <div class="table-actions"><b>Mesa ${table.table}</b><span class="pill ${table.occupied ? 'occupied' : 'green'}" data-table-status>${table.occupied ? 'Ocupada' : 'Libre'}</span></div>
+      <button class="btn secondary small-btn table-clear" type="button" data-clear-table="${table.table}" ${table.occupied ? '' : 'hidden'}>Marcar desocupada</button>
+      <img src="${esc(table.qrUrl)}" alt="QR para la mesa ${table.table}" loading="lazy">
+      <a href="${esc(table.url)}" target="_blank" rel="noreferrer">Abrir QR de mesa</a>
     </article>`).join('');
+    const occupiedTables = tables.filter((table) => table.occupied).length;
     app.innerHTML = `<div class="heading-row"><div><h1>Panel del local</h1><p>${esc(restaurant.name)} · ${restaurant.tableCount} mesas · <a href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Abrir menú</a></p></div></div>
-      <div class="dashboard-grid"><div class="stack">
-        <section class="section"><div class="section-head"><h2>Pedidos y cobros</h2><span class="pill" data-orders-count>${orders.length} pedidos</span></div>
-          <div class="orders" id="orders-list">${orderListHtml(orders)}</div></section>
-        <section class="section"><div class="section-head"><h2>Menú</h2><span class="muted small">Productos y precios del local</span></div>
-          <div class="menu-toolbar"><span class="muted small" id="menu-save-status">Todos los cambios están guardados</span><button class="btn primary small-btn" id="save-all-menu" type="button" disabled>Guardar todo</button></div>
-          <form class="menu-create" id="new-menu-form">
-            <div class="menu-inputs"><input class="menu-input" name="name" placeholder="Nombre del producto" aria-label="Nombre del producto" required maxlength="100">
-              <input class="menu-input" name="category" placeholder="Categoría" aria-label="Categoría" required maxlength="40">
-              <input class="menu-input" name="description" placeholder="Descripción" aria-label="Descripción" maxlength="240">
-              <input class="menu-input" name="priceArs" type="number" min="1" step="1" placeholder="Precio en ARS" aria-label="Precio en pesos argentinos" required></div>
-            <button class="btn primary small-btn" type="submit">Agregar producto</button>
-          </form>
-          <div class="menu-admin" id="menu-admin">${menu.map(menuItemHtml).join('')}</div>
+      <nav class="dashboard-tabs" role="tablist" aria-label="Secciones del local">
+        <button class="dashboard-tab" type="button" role="tab" id="tab-menu" aria-controls="panel-menu" data-dashboard-tab="menu"><span>Menú</span><span class="tab-count">${menu.length}</span></button>
+        <button class="dashboard-tab" type="button" role="tab" id="tab-orders" aria-controls="panel-orders" data-dashboard-tab="orders"><span>Pedidos</span><span class="tab-count" data-orders-count>${orders.length}</span></button>
+        <button class="dashboard-tab" type="button" role="tab" id="tab-tables" aria-controls="panel-tables" data-dashboard-tab="tables"><span>Mesas</span><span class="tab-count" data-tables-count>${occupiedTables} ocupadas</span></button>
+      </nav>
+      <div class="dashboard-panels">
+        <section class="dashboard-tab-panel" id="panel-menu" role="tabpanel" aria-labelledby="tab-menu" data-dashboard-panel="menu">
+          <section class="section"><div class="section-head"><div><h2>Menú</h2><span class="muted small">Productos y precios del local</span></div><a class="text-btn small" href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Vista de cliente</a></div>
+            <div class="menu-import">
+              <div><strong>Importar menú desde archivo</strong><p class="muted small">Foto, PDF, Word, Excel, CSV/TSV, texto o JSON. El análisis se realiza en este dispositivo.</p></div>
+              <input id="menu-import-file" type="file" accept=".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.pdf,.docx,.xlsx,.xls,.xlsm,.ods,.csv,.tsv,.txt,.rtf,.json" hidden>
+              <button class="btn secondary small-btn" id="menu-import-trigger" type="button">Elegir archivo</button>
+              <span class="muted small" id="menu-import-status" aria-live="polite"></span>
+            </div>
+            <div class="menu-toolbar"><span class="muted small" id="menu-save-status">Todos los cambios están guardados</span><button class="btn primary small-btn" id="save-all-menu" type="button" disabled>Guardar todo</button></div>
+            <form class="menu-create" id="new-menu-form">
+              <div class="menu-inputs"><input class="menu-input" name="name" placeholder="Nombre del producto" aria-label="Nombre del producto" required maxlength="100">
+                <input class="menu-input" name="category" placeholder="Categoría" aria-label="Categoría" required maxlength="40">
+                <input class="menu-input" name="description" placeholder="Descripción" aria-label="Descripción" maxlength="240">
+                <input class="menu-input" name="priceArs" type="number" min="1" step="1" placeholder="Precio en ARS" aria-label="Precio en pesos argentinos" required></div>
+              <button class="btn primary small-btn" type="submit">Agregar producto</button>
+            </form>
+            <div class="menu-admin" id="menu-admin">${menu.map(menuItemHtml).join('')}</div>
+          </section>
         </section>
-        <section class="section"><div class="section-head"><h2>QR por mesa</h2><span class="muted small">Enlaces listos para compartir</span></div><div class="table-grid">${tableCards}</div></section>
-      </div><div class="stack">
-        <section class="section"><div class="section-head"><h2>Cuenta del local</h2></div>
-      <div class="billing"><span class="pill ${restaurant.subscriptionStatus === 'authorized' ? 'green' : ''}">${subscriptionLabel}</span><div>Plan ${restaurant.plan === 'ampliado' ? 'Ampliado' : 'Base'}</div><div class="billing-price">${money(price)}<span class="muted small"> / mes</span></div>
-            <p class="billing-reminder ${subscriptionOverdue ? 'overdue' : ''}">${esc(subscriptionReminder)}</p>
-            <p class="muted small">La activación y renovación del plan requieren la verificación del pago. Este aviso aparece al ingresar al panel.</p>
-          </div></section>
-      </div></div>`;
+        <section class="dashboard-tab-panel" id="panel-orders" role="tabpanel" aria-labelledby="tab-orders" data-dashboard-panel="orders" hidden>
+          <section class="section"><div class="section-head"><h2>Pedidos y cobros</h2><span class="pill">Actualización automática</span></div><div class="orders" id="orders-list">${orderListHtml(orders)}</div></section>
+        </section>
+        <section class="dashboard-tab-panel" id="panel-tables" role="tabpanel" aria-labelledby="tab-tables" data-dashboard-panel="tables" hidden>
+          <section class="section"><div class="section-head"><div><h2>Mesas</h2><span class="muted small">Una mesa se ocupa con el primer pedido y se libera desde aquí.</span></div></div><div class="table-grid">${tableCards}</div></section>
+        </section>
+      </div>
+      <section class="section account-summary"><div class="section-head"><h2>Cuenta del local</h2></div>
+        <div class="billing"><span class="pill ${restaurant.subscriptionStatus === 'authorized' ? 'green' : ''}">${subscriptionLabel}</span><div>Plan ${restaurant.plan === 'ampliado' ? 'Ampliado' : 'Base'}</div><div class="billing-price">${money(price)}<span class="muted small"> / mes</span></div>
+          <p class="billing-reminder ${subscriptionOverdue ? 'overdue' : ''}">${esc(subscriptionReminder)}</p>
+          <p class="muted small">La activación y renovación del plan requieren la verificación del pago. Este aviso aparece al ingresar al panel.</p>
+        </div>
+      </section>`;
     document.querySelector('#logout').addEventListener('click', async () => {
       await api('/api/auth/logout', { method: 'POST' });
       renderAuth();
     });
+    document.querySelectorAll('[data-dashboard-tab]').forEach((button) => {
+      button.addEventListener('click', () => setDashboardTab(button.dataset.dashboardTab));
+      button.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const buttons = [...document.querySelectorAll('[data-dashboard-tab]')];
+        const direction = event.key === 'ArrowRight' ? 1 : -1;
+        const target = buttons[(buttons.indexOf(button) + direction + buttons.length) % buttons.length];
+        target.focus();
+        target.click();
+      });
+    });
+    let initialTab = 'orders';
+    try {
+      const savedTab = localStorage.getItem('tably-dashboard-tab');
+      if (['menu', 'orders', 'tables'].includes(savedTab)) initialTab = savedTab;
+    } catch {}
+    setDashboardTab(initialTab);
     bindMenuControls();
+    bindMenuImport();
     bindOrderControls();
+    bindTableControls();
     dashboardOrdersSnapshot = JSON.stringify(orders);
+    dashboardTablesSnapshot = JSON.stringify(tables.map(({ table, occupied, occupiedAt }) => ({ table, occupied, occupiedAt })));
     window.tablyDashboardPoll = setInterval(() => refreshDashboardOrders().catch(() => {}), 8000);
   } catch {
     stopDashboardPolling();
