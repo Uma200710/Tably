@@ -97,28 +97,28 @@ function renderAuth(showRegister = false) {
   stopDashboardPolling();
   topbarMeta.textContent = 'Pedidos y mesas en orden';
   app.innerHTML = `<div class="auth-wrap">
-    <section class="intro"><div class="intro-mark">Menos espera, más servicio</div>
-      <h1>El salón sigue en movimiento.</h1>
-      <p>Pedidos desde cada mesa, comanda al instante y cobros en persona.</p>
+    <section class="intro"><div class="intro-mark">Gestión para cafeterías</div>
+      <h1>Pedidos y mesas, en un solo lugar.</h1>
+      <p>Administrá el menú, recibí pedidos y registrá los cobros de tu local.</p>
     </section>
     <section class="panel" aria-label="Acceso al local">
-      <h2>${showRegister ? 'Abrí tu café en Tably' : 'Entrar al local'}</h2>
+      <h2>${showRegister ? 'Crear cuenta para tu café' : 'Iniciar sesión'}</h2>
       <p class="muted small">${showRegister ? 'Empezá con tu menú y tus mesas. El personal cobra cada pedido en la mesa.' : 'Gestioná pedidos, mesas y cobros.'}</p>
       <form class="form" id="auth-form">
         ${showRegister ? `<div class="field"><label for="cafe-name">Nombre del café</label><input id="cafe-name" name="name" required minlength="2" maxlength="80" autocomplete="organization"></div>` : ''}
         <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="email"></div>
         <div class="field"><label for="password">Contraseña</label><input id="password" name="password" type="password" required minlength="${showRegister ? '10' : '1'}" autocomplete="${showRegister ? 'new-password' : 'current-password'}"></div>
         ${showRegister ? `<div class="field"><label for="table-count">Cantidad de mesas</label><input id="table-count" name="tableCount" type="number" min="1" max="200" value="10" required><span class="muted small">Hasta 15 mesas: Base · Más de 15: Ampliado</span></div>` : ''}
-        <button class="btn primary" type="submit">${showRegister ? 'Crear cuenta' : 'Ingresar'}</button>
+        <button class="btn primary" type="submit">${showRegister ? 'Crear cuenta' : 'Iniciar sesión'}</button>
       </form>
-      <div class="switch">${showRegister ? '¿Ya tenés cuenta?' : '¿Todavía no tenés cuenta?'} <button class="text-btn" id="auth-switch">${showRegister ? 'Ingresá' : 'Crear cuenta'}</button></div>
+      <div class="switch">${showRegister ? '¿Ya tenés cuenta?' : '¿Todavía no tenés cuenta?'} <button class="text-btn" id="auth-switch">${showRegister ? 'Iniciar sesión' : 'Crear cuenta'}</button></div>
     </section>
   </div>`;
   document.querySelector('#auth-switch').addEventListener('click', () => renderAuth(!showRegister));
   document.querySelector('#auth-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector('button[type="submit"]');
-    const label = showRegister ? 'Crear cuenta' : 'Ingresar';
+    const label = showRegister ? 'Crear cuenta' : 'Iniciar sesión';
     busyButton(button, true, label);
     const data = Object.fromEntries(new FormData(event.currentTarget));
     if (showRegister) data.tableCount = Number(data.tableCount);
@@ -414,11 +414,11 @@ function renderPlatformLogin(errorMessage = '') {
     <p class="muted small">Ingresá con las credenciales privadas de administración.</p>${errorMessage ? `<p class="error">${esc(errorMessage)}</p>` : ''}
     <form class="form" id="platform-login-form"><div class="field"><label for="platform-email">Email</label><input id="platform-email" name="email" type="email" required autocomplete="username"></div>
       <div class="field"><label for="platform-password">Contraseña</label><input id="platform-password" name="password" type="password" required autocomplete="current-password"></div>
-      <button class="btn primary" type="submit">Ingresar</button></form></section></div>`;
+      <button class="btn primary" type="submit">Iniciar sesión</button></form></section></div>`;
   document.querySelector('#platform-login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector('button');
-    busyButton(button, true, 'Ingresar');
+    busyButton(button, true, 'Iniciar sesión');
     try {
       const form = Object.fromEntries(new FormData(event.currentTarget));
       await api('/api/platform/auth/login', { method: 'POST', body: JSON.stringify(form) });
