@@ -17,7 +17,7 @@ const webRoot = path.join(root, 'web');
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-7' });
 const serviceUnavailableMessage = '¡Lo sentimos! Este servicio no está disponible ahora mismo.';
 const registerSchema = z.object({
-  name: z.string().trim().transform((value) => value.normalize('NFC')).min(2).max(80),
+  name: z.string().trim().min(2).max(80).transform((value) => value.normalize('NFC')),
   email: z.string().trim().email().max(254),
   password: z.string().min(10).max(72),
   tableCount: z.coerce.number().int().min(1).max(200),
