@@ -5,3 +5,6 @@ coverage/
 *.log
 .env.example
 .neon
+
+# Local Netlify folder
+.netlify
