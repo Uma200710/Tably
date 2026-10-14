@@ -77,7 +77,7 @@ async function requireEnabledRestaurant(req, res, next) {
     const result = await query('SELECT is_enabled FROM restaurants WHERE id = $1', [req.restaurantId]);
     if (!result.rowCount) return res.status(401).json({ error: 'La cuenta ya no existe.' });
     if (!result.rows[0].is_enabled) {
-      return res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'Esta cuenta está deshabilitada. Contactá a Tably.' });
+      return res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'Esta cuenta está temporalmente deshabilitada. Verificá el estado del pago para solicitar la reactivación.' });
     }
     next();
   } catch (error) {
@@ -145,7 +145,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     return res.status(401).json({ error: 'Email o contraseña incorrectos.' });
   }
   if (!restaurant.is_enabled) {
-    return res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'Esta cuenta está deshabilitada. Contactá a Tably.' });
+    return res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'Esta cuenta está temporalmente deshabilitada. Verificá el estado del pago para solicitar la reactivación.' });
   }
   setSession(res, restaurant.id);
   res.json({ ok: true });

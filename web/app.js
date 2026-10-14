@@ -354,17 +354,17 @@ async function renderDashboard() {
     const subscriptionOverdue = ['trial', 'pending', 'authorized'].includes(restaurant.subscriptionStatus) && daysUntilDue < 0;
     const subscriptionReminder = restaurant.subscriptionStatus === 'trial'
       ? daysUntilDue >= 0
-        ? `Tu prueba vence el ${dueDateText}. Coordiná el pago con Tably para continuar usando el servicio.`
-        : `Tu prueba venció el ${dueDateText}. Contactá a Tably para coordinar el pago de tu plan.`
+        ? `El período de prueba finaliza el ${dueDateText}. Para continuar, se requiere una suscripción activa.`
+        : `El período de prueba finalizó el ${dueDateText}. El acceso continuará una vez verificado el pago de la suscripción.`
       : restaurant.subscriptionStatus === 'authorized'
         ? daysUntilDue < 0
-          ? `Tu plan venció el ${dueDateText}. Contactá a Tably para confirmar el pago.`
+          ? `La suscripción venció el ${dueDateText}. El acceso continuará una vez verificado el pago.`
           : daysUntilDue <= 7
-            ? `Tu plan vence pronto, el ${dueDateText}. Acordate de coordinar el pago con Tably.`
-            : `Próximo vencimiento: ${dueDateText}.`
+            ? `La suscripción vence el ${dueDateText}. Revisá el estado del pago para mantener el servicio activo.`
+            : `Vencimiento de la suscripción: ${dueDateText}.`
         : restaurant.subscriptionStatus === 'pending'
-          ? `Tenemos registrado un pago pendiente. Contactá a Tably para confirmar el estado.`
-          : `Las suscripciones se coordinan manualmente con Tably. Próximo vencimiento: ${dueDateText}.`;
+          ? `El pago está pendiente de verificación. El servicio se activará una vez confirmado.`
+          : `El estado del servicio se actualizará una vez verificado el pago. Vencimiento: ${dueDateText}.`;
     const tableCards = tables.map((table) => `<article class="table">
       <div class="table-actions"><b>Mesa ${table.table}</b><a class="text-btn small" href="${esc(table.qrUrl)}" download="tably-${restaurant.slug}-mesa-${table.table}.png">Descargar QR</a></div>
       <img src="${esc(table.qrUrl)}" alt="QR para la mesa ${table.table}">
@@ -390,7 +390,7 @@ async function renderDashboard() {
         <section class="section"><div class="section-head"><h2>Cuenta del local</h2></div>
       <div class="billing"><span class="pill ${restaurant.subscriptionStatus === 'authorized' ? 'green' : ''}">${subscriptionLabel}</span><div>Plan ${restaurant.plan === 'ampliado' ? 'Ampliado' : 'Base'}</div><div class="billing-price">${money(price)}<span class="muted small"> / mes</span></div>
             <p class="billing-reminder ${subscriptionOverdue ? 'overdue' : ''}">${esc(subscriptionReminder)}</p>
-            <p class="muted small">Por ahora, el pago del plan se coordina manualmente con Tably. Este aviso aparece cuando ingresás al panel.</p>
+            <p class="muted small">La activación y renovación del plan requieren la verificación del pago. Este aviso aparece al ingresar al panel.</p>
           </div></section>
       </div></div>`;
     document.querySelector('#logout').addEventListener('click', async () => {
