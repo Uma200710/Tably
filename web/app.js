@@ -175,7 +175,7 @@ function menuItemHtml(item) {
       <input class="menu-input" name="priceArs" type="number" min="1" step="1" value="${item.priceArs}" aria-label="Precio en pesos argentinos" required></div>
     <div class="menu-edit-actions"><label class="active-toggle"><input name="active" type="checkbox" ${item.active ? 'checked' : ''}> Disponible</label>
       <button class="btn secondary small-btn" type="submit">Guardar</button>
-      ${item.active ? `<button class="menu-delete" type="button" data-menu-delete="${item.id}" aria-label="Eliminar ${esc(item.name)} del menú" title="Eliminar del menú"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6m4-6v6M5 7l1 13h12l1-13M9 7V4h6v3M3 7h18"/></svg></button>` : ''}</div>
+      <button class="menu-delete" type="button" data-menu-delete="${item.id}" aria-label="Eliminar ${esc(item.name)} del menú" title="Eliminar del menú"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6m4-6v6M5 7l1 13h12l1-13M9 7V4h6v3M3 7h18"/></svg><span>Eliminar</span></button></div>
     <div class="menu-edit-status" aria-live="polite"></div>
   </form>`;
 }
@@ -240,13 +240,13 @@ function bindMenuEditForm(form) {
   });
   form.querySelector('[data-menu-delete]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
-    if (!await confirmAction('¿Eliminar este producto del menú? Los pedidos anteriores no cambian.')) return;
+    if (!await confirmAction('¿Eliminar este producto definitivamente? Los pedidos anteriores conservarán su información.')) return;
     button.disabled = true;
     try {
       await api(`/api/admin/menu/${form.dataset.menuId}`, { method: 'DELETE' });
       form.remove();
       syncMenuSaveAll();
-      toast('Producto eliminado del menú. Los pedidos anteriores se conservaron.');
+      toast('Producto eliminado. Los pedidos anteriores se conservaron.');
     } catch (error) {
       button.disabled = false;
       toast(error.message);
@@ -293,21 +293,18 @@ function showMenuImportPreview(products, fileName, method, quality = {}) {
   const dialog = document.createElement('dialog');
   dialog.className = 'menu-import-dialog';
   const selectedCount = products.filter((item) => item.selected).length;
-  const reviewCount = products.filter((item) => item.needsReview && !item.duplicate).length;
-  const qualityNotes = [];
-  if (reviewCount) qualityNotes.push(`${reviewCount} ${reviewCount === 1 ? 'lectura requiere' : 'lecturas requieren'} revisión; ${reviewCount === 1 ? 'se dejó' : 'se dejaron'} sin seleccionar.`);
-  if (quality.skippedPriceLines) qualityNotes.push(`Se descartaron ${quality.skippedPriceLines} ${quality.skippedPriceLines === 1 ? 'cifra o línea' : 'cifras o líneas'} que no se pudieron asociar con seguridad.`);
-  dialog.innerHTML = `<div class="import-dialog-head"><div><span class="muted small">${esc(method)} · ${products.length} productos detectados</span><h2>Revisá el menú</h2></div><button class="dialog-close" type="button" aria-label="Cerrar">×</button></div>
+  dialog.innerHTML = `<div class="import-dialog-head"><div><span class="muted small">${esc(method)} · <span data-import-count>${products.length}</span> productos detectados</span><h2>Revisá el menú</h2></div><button class="dialog-close" type="button" aria-label="Cerrar">×</button></div>
     <p class="import-privacy">${esc(fileName)}. El archivo se analizó en este dispositivo. Solo se guardan los productos que confirmes.</p>
-    ${qualityNotes.length ? `<p class="import-quality">${qualityNotes.map(esc).join(' ')}</p>` : ''}
+    <p class="import-quality" data-import-quality hidden></p>
     <div class="import-toolbar"><label><input type="checkbox" id="import-select-all" ${selectedCount === products.filter((item) => !item.duplicate).length ? 'checked' : ''}> Seleccionar todos los productos nuevos</label><span class="muted small" id="import-selection-count">${selectedCount} seleccionados</span></div>
-    <div class="import-table-wrap"><table class="import-table"><thead><tr><th>Agregar</th><th>Categoría</th><th>Producto</th><th>Descripción</th><th>Precio (ARS)</th></tr></thead>
+    <div class="import-table-wrap"><table class="import-table"><thead><tr><th>Agregar</th><th>Categoría</th><th>Producto</th><th>Descripción</th><th>Precio (ARS)</th><th>Quitar</th></tr></thead>
       <tbody>${products.map((item, index) => `<tr data-import-row="${index}" class="${item.duplicate ? 'is-duplicate' : ''} ${item.needsReview && !item.duplicate ? 'needs-review' : ''}">
         <td><input type="checkbox" data-import-select ${item.selected ? 'checked' : ''} ${item.duplicate ? 'disabled' : ''} aria-label="${item.duplicate ? 'Ya existe en el menú' : 'Importar producto'}"></td>
         <td><input data-import-field="category" value="${esc(item.category)}" maxlength="40" aria-label="Categoría" ${item.duplicate ? 'disabled' : ''}></td>
         <td><input data-import-field="name" value="${esc(item.name)}" maxlength="100" aria-label="Producto" ${item.duplicate ? 'disabled' : ''}><small>${item.duplicate ? 'Ya existe en el menú; se omitirá.' : item.needsReview ? `Lectura dudosa (${item.confidence ?? 0} %). Corrige nombre y precio antes de agregar.` : item.confidence != null ? `Lectura clara · ${item.confidence} %` : ''}</small></td>
         <td><input data-import-field="description" value="${esc(item.description)}" maxlength="240" aria-label="Descripción" ${item.duplicate ? 'disabled' : ''}></td>
         <td><input data-import-field="priceArs" type="number" min="1" step="1" value="${item.priceArs}" aria-label="Precio" ${item.duplicate ? 'disabled' : ''}></td>
+        <td><button class="import-remove" type="button" data-remove-import aria-label="Quitar ${esc(item.name)} de esta importación">Quitar</button></td>
       </tr>`).join('')}</tbody></table></div>
     <div class="import-dialog-actions"><button class="btn secondary" type="button" data-import-cancel>Cancelar</button><button class="btn primary" type="button" data-import-save>${selectedCount ? `Importar ${selectedCount} productos` : 'Importar productos'}</button></div>`;
   document.body.append(dialog);
@@ -315,8 +312,17 @@ function showMenuImportPreview(products, fileName, method, quality = {}) {
   const selectAll = dialog.querySelector('#import-select-all');
   const selectionCount = dialog.querySelector('#import-selection-count');
   const saveButton = dialog.querySelector('[data-import-save]');
+  const qualityNotice = dialog.querySelector('[data-import-quality]');
   const refreshSelection = () => {
+    const rows = dialog.querySelectorAll('[data-import-row]');
     const count = dialog.querySelectorAll('[data-import-select]:checked:not(:disabled)').length;
+    const reviewCount = [...rows].filter((row) => row.classList.contains('needs-review') && !row.classList.contains('is-duplicate')).length;
+    const qualityNotes = [];
+    if (reviewCount) qualityNotes.push(`${reviewCount} ${reviewCount === 1 ? 'lectura requiere' : 'lecturas requieren'} revisión; ${reviewCount === 1 ? 'se dejó' : 'se dejaron'} sin seleccionar.`);
+    if (quality.skippedPriceLines) qualityNotes.push(`Se descartaron ${quality.skippedPriceLines} ${quality.skippedPriceLines === 1 ? 'cifra o línea' : 'cifras o líneas'} que no se pudieron asociar con seguridad.`);
+    dialog.querySelector('[data-import-count]').textContent = rows.length;
+    qualityNotice.hidden = qualityNotes.length === 0;
+    qualityNotice.textContent = qualityNotes.join(' ');
     selectionCount.textContent = `${count} seleccionados`;
     saveButton.textContent = count ? `Importar ${count} productos` : 'Importar productos';
     saveButton.disabled = count === 0;
@@ -326,6 +332,10 @@ function showMenuImportPreview(products, fileName, method, quality = {}) {
   };
 
   dialog.querySelectorAll('[data-import-select]').forEach((checkbox) => checkbox.addEventListener('change', refreshSelection));
+  dialog.querySelectorAll('[data-remove-import]').forEach((button) => button.addEventListener('click', () => {
+    button.closest('[data-import-row]').remove();
+    refreshSelection();
+  }));
   selectAll.addEventListener('change', () => {
     dialog.querySelectorAll('[data-import-select]:not(:disabled)').forEach((checkbox) => { checkbox.checked = selectAll.checked; });
     refreshSelection();
@@ -520,7 +530,7 @@ async function renderDashboard() {
           : `El estado del servicio se actualizará una vez verificado el pago. Vencimiento: ${dueDateText}.`;
     const tableCards = tables.map((table) => `<article class="table" data-table-card="${table.table}">
       <div class="table-actions"><b>Mesa ${table.table}</b><span class="pill ${table.occupied ? 'occupied' : 'green'}" data-table-status>${table.occupied ? 'Ocupada' : 'Libre'}</span></div>
-      <button class="btn secondary small-btn table-clear" type="button" data-clear-table="${table.table}" ${table.occupied ? '' : 'hidden'}>Marcar desocupada</button>
+      <button class="btn secondary small-btn table-clear" type="button" data-clear-table="${table.table}" aria-label="Desocupar mesa ${table.table}" ${table.occupied ? '' : 'hidden'}>Desocupar mesa</button>
       <img src="${esc(table.qrUrl)}" alt="QR para la mesa ${table.table}" loading="lazy">
       <a href="${esc(table.url)}" target="_blank" rel="noreferrer">Abrir QR de mesa</a>
     </article>`).join('');
@@ -535,7 +545,7 @@ async function renderDashboard() {
         <section class="dashboard-tab-panel" id="panel-menu" role="tabpanel" aria-labelledby="tab-menu" data-dashboard-panel="menu">
           <section class="section"><div class="section-head"><div><h2>Menú</h2><span class="muted small">Productos y precios del local</span></div><a class="text-btn small" href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Vista de cliente</a></div>
             <div class="menu-import">
-              <div><strong>Importar menú desde archivo</strong><p class="muted small">Foto, PDF, Word, Excel, CSV/TSV, texto o JSON. El análisis se realiza en este dispositivo.</p></div>
+              <div><strong>Importar menú desde archivo</strong><p class="muted small">Escanea tu menú. Admite fotos, PDF, Word, Excel, CSV/TSV, texto o JSON.</p></div>
               <input id="menu-import-file" type="file" accept=".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.pdf,.docx,.xlsx,.xls,.xlsm,.ods,.csv,.tsv,.txt,.rtf,.json" hidden>
               <button class="btn secondary small-btn" id="menu-import-trigger" type="button">Elegir archivo</button>
               <span class="muted small" id="menu-import-status" aria-live="polite"></span>

@@ -405,7 +405,7 @@ app.patch('/api/admin/menu/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/admin/menu/:id', requireAuth, async (req, res) => {
   const result = await query(
-    'UPDATE menu_items SET active = FALSE WHERE id = $1 AND restaurant_id = $2 RETURNING id',
+    'DELETE FROM menu_items WHERE id = $1 AND restaurant_id = $2 RETURNING id',
     [req.params.id, req.restaurantId],
   );
   if (!result.rowCount) return res.status(404).json({ error: 'No encontramos ese producto.' });

@@ -136,8 +136,8 @@ a { color: inherit; }
 .table { border: 1px solid var(--line); border-radius: 6px; padding: 11px; min-width: 0; }
 .table img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; margin: 7px 0; }
 .table a { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.table-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.table-clear { width: 100%; margin-top: 9px; }
+.table-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.table-clear { display: flex; align-items: center; justify-content: center; width: 100%; min-width: 0; margin-top: 9px; padding: 8px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; }
 .table-clear[hidden] { display: none; }
 .pill.occupied { background: var(--accent-soft); color: var(--accent); }
 .menu-import { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px 14px; margin: 0 0 18px; padding: 14px; border: 1px dashed var(--line); border-radius: 8px; background: var(--soft); }
@@ -154,7 +154,7 @@ a { color: inherit; }
 .import-toolbar label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .import-toolbar input, .import-table input[type="checkbox"] { accent-color: var(--accent); }
 .import-table-wrap { max-height: min(56vh, 590px); overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
-.import-table { width: 100%; min-width: 820px; border-collapse: collapse; font-size: 12px; }
+.import-table { width: 100%; min-width: 890px; border-collapse: collapse; font-size: 12px; }
 .import-table th { position: sticky; top: 0; z-index: 1; padding: 9px; background: var(--soft); color: var(--muted); text-align: left; }
 .import-table td { padding: 6px; border-top: 1px solid var(--line); vertical-align: top; }
 .import-table td:first-child, .import-table th:first-child { width: 54px; text-align: center; }
@@ -164,6 +164,8 @@ a { color: inherit; }
 .import-table tr.needs-review:not(.is-duplicate) { background: var(--accent-soft); }
 .import-table tr.needs-review:not(.is-duplicate) td small { color: var(--accent); font-weight: 600; }
 .import-table td small { display: block; margin-top: 4px; color: var(--muted); }
+.import-remove { min-height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--muted); font-size: 12px; }
+.import-remove:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .import-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 14px; }
 .menu-create { display: grid; gap: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .menu-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
@@ -176,7 +178,7 @@ a { color: inherit; }
 .menu-edit.is-dirty { border-left: 3px solid var(--accent); padding-left: 10px; background: var(--accent-soft); }
 .menu-edit-status { min-height: 18px; color: var(--muted); font-size: 12px; }
 .menu-edit-actions { display: flex; align-items: center; gap: 12px; }
-.menu-delete { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); }
+.menu-delete { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 36px; min-height: 36px; width: auto; height: auto; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 600; }
 .menu-delete:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .menu-delete svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .active-toggle { display: flex; align-items: center; gap: 6px; margin-right: auto; color: var(--muted); font-size: 12px; }
