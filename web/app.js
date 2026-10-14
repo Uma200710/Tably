@@ -538,9 +538,9 @@ async function renderDashboard() {
           : `El estado del servicio se actualizará una vez verificado el pago. Vencimiento: ${dueDateText}.`;
     const tableCards = tables.map((table) => `<article class="table" data-table-card="${table.table}">
       <div class="table-actions"><b>Mesa ${table.table}</b><span class="pill ${table.occupied ? 'occupied' : 'green'}" data-table-status>${table.occupied ? 'Ocupada' : 'Libre'}</span></div>
-      <button class="btn secondary small-btn table-clear" type="button" data-clear-table="${table.table}" aria-label="Desocupar mesa ${table.table}" ${table.occupied ? '' : 'hidden'}>Desocupar mesa</button>
       <img src="${esc(table.qrUrl)}" alt="QR para la mesa ${table.table}" loading="lazy">
       <a href="${esc(table.url)}" target="_blank" rel="noreferrer">Abrir QR de mesa</a>
+      <button class="btn secondary small-btn table-clear" type="button" data-clear-table="${table.table}" aria-label="Desocupar mesa ${table.table}" ${table.occupied ? '' : 'hidden'}>Desocupar mesa</button>
     </article>`).join('');
     const occupiedTables = tables.filter((table) => table.occupied).length;
     app.innerHTML = `<div class="heading-row"><div><h1>Panel del local</h1><p>${esc(restaurant.name)} · ${restaurant.tableCount} mesas · <a href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Abrir menú</a></p></div></div>
