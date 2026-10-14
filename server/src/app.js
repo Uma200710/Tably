@@ -376,7 +376,13 @@ app.post('/api/admin/menu', requireAuth, async (req, res) => {
 app.post('/api/admin/menu/import', requireAuth, async (req, res) => {
   const parsed = menuImportSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Revisá los productos importados: se admiten hasta 200 con nombre, categoría y precio válidos.' });
-  const items = parsed.data.items.map((item) => ({ ...item, id: randomUUID() }));
+  const items = parsed.data.items.map((item) => ({
+    id: randomUUID(),
+    category: item.category,
+    name: item.name,
+    description: item.description,
+    price_ars: item.priceArs,
+  }));
   const result = await query(
     `INSERT INTO menu_items (id, restaurant_id, category, name, description, price_ars, active)
      SELECT imported.id::uuid, $1, imported.category, imported.name, imported.description, imported.price_ars, TRUE
