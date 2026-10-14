@@ -143,7 +143,7 @@ a { color: inherit; }
 .btn.secondary.table-clear:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .table-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .table-clear:disabled { cursor: wait; opacity: .65; }
-.table-clear[hidden] { display: none; }
+.btn.secondary.table-clear[hidden] { display: none; }
 .pill.occupied { background: var(--accent-soft); color: var(--accent); }
 .menu-import { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px 14px; margin: 0 0 18px; padding: 14px; border: 1px dashed var(--line); border-radius: 8px; background: var(--soft); }
 .menu-import p { margin: 4px 0 0; line-height: 1.45; }
