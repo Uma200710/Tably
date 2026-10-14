@@ -104,7 +104,7 @@ function renderAuth(showRegister = false) {
     <section class="panel" aria-label="Acceso al local">
       <h2>${showRegister ? 'Crear cuenta para tu café' : 'Iniciar sesión'}</h2>
       <p class="muted small">${showRegister ? 'Empezá con tu menú y tus mesas. El personal cobra cada pedido en la mesa.' : 'Gestioná pedidos, mesas y cobros.'}</p>
-      <form class="form" id="auth-form">
+      <form class="form" id="auth-form" accept-charset="UTF-8">
         ${showRegister ? `<div class="field"><label for="cafe-name">Nombre del café</label><input id="cafe-name" name="name" required minlength="2" maxlength="80" autocomplete="organization"></div>` : ''}
         <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="email"></div>
         <div class="field"><label for="password">Contraseña</label><input id="password" name="password" type="password" required minlength="${showRegister ? '10' : '1'}" autocomplete="${showRegister ? 'new-password' : 'current-password'}"></div>
@@ -121,7 +121,10 @@ function renderAuth(showRegister = false) {
     const label = showRegister ? 'Crear cuenta' : 'Iniciar sesión';
     busyButton(button, true, label);
     const data = Object.fromEntries(new FormData(event.currentTarget));
-    if (showRegister) data.tableCount = Number(data.tableCount);
+    if (showRegister) {
+      data.name = data.name.normalize('NFC');
+      data.tableCount = Number(data.tableCount);
+    }
     try {
       await api(`/api/auth/${showRegister ? 'register' : 'login'}`, { method: 'POST', body: JSON.stringify(data) });
       await renderDashboard();
