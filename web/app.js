@@ -359,19 +359,27 @@ function showMenuImportPreview(products, fileName, method, quality = {}) {
     if (!selected.length) return;
     saveButton.disabled = true;
     saveButton.textContent = 'Guardando…';
+    let result;
     try {
-      const result = await api('/api/admin/menu/import', { method: 'POST', body: JSON.stringify({ items: selected }) });
-      const list = document.querySelector('#menu-admin');
-      list.insertAdjacentHTML('beforeend', result.items.map(menuItemHtml).join(''));
-      list.querySelectorAll('.menu-edit:not([data-bound="true"])').forEach(bindMenuEditForm);
-      syncMenuSaveAll();
-      dialog.close();
-      toast(`Se importaron ${result.imported} productos al menú.`);
+      result = await api('/api/admin/menu/import', { method: 'POST', body: JSON.stringify({ items: selected }) });
     } catch (error) {
       saveButton.disabled = false;
       saveButton.textContent = `Importar ${selected.length} productos`;
       toast(error.message);
+      return;
     }
+
+    const importedCount = result.imported ?? selected.length;
+    dialog.close();
+    const status = document.querySelector('#menu-import-status');
+    if (status) status.textContent = `Menú guardado: ${importedCount} productos agregados.`;
+    const list = document.querySelector('#menu-admin');
+    if (list && Array.isArray(result.items)) {
+      list.insertAdjacentHTML('beforeend', result.items.map(menuItemHtml).join(''));
+      list.querySelectorAll('.menu-edit:not([data-bound="true"])').forEach(bindMenuEditForm);
+      syncMenuSaveAll();
+    }
+    toast(`Menú guardado: se agregaron ${importedCount} productos.`);
   });
 }
 
