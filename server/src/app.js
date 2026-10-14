@@ -16,6 +16,7 @@ const root = process.cwd();
 const webRoot = path.join(root, 'web');
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-7' });
 const serviceUnavailableMessage = '¡Lo sentimos! Este servicio no está disponible ahora mismo.';
+const restaurantClosedMessage = 'El local está cerrado y no recibe pedidos por el momento. Intentá nuevamente más tarde.';
 const registerSchema = z.object({
   name: z.string().trim().min(2).max(80).transform((value) => value.normalize('NFC')),
   email: z.string().trim().email().max(254),
@@ -32,6 +33,30 @@ const menuItemSchema = z.object({
   active: z.boolean().default(true),
 });
 const menuImportSchema = z.object({ items: z.array(menuItemSchema).min(1).max(200) });
+const serviceStatusSchema = z.object({ isOpen: z.boolean() });
+const dayCloseReportSql = `WITH business_day AS (
+       SELECT (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date AS day
+     ), bounds AS (
+       SELECT day,
+              day::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires' AS starts_at,
+              (day + 1)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires' AS ends_at
+       FROM business_day
+     ), day_orders AS (
+       SELECT orders.* FROM orders CROSS JOIN bounds
+       WHERE orders.restaurant_id = $1
+         AND orders.created_at >= bounds.starts_at AND orders.created_at < bounds.ends_at
+     )
+     SELECT (SELECT to_char(day, 'YYYY-MM-DD') FROM bounds) AS date,
+            CAST(COUNT(*) AS integer) AS "ordersCount",
+            CAST(COUNT(*) FILTER (WHERE payment_status = 'approved' AND order_status <> 'cancelled') AS integer) AS "paidCount",
+            COALESCE(SUM(total_ars) FILTER (WHERE payment_status = 'approved' AND order_status <> 'cancelled'), 0) AS "paidTotalArs",
+            CAST(COUNT(*) FILTER (WHERE payment_status = 'pending' AND order_status <> 'cancelled') AS integer) AS "pendingCount",
+            COALESCE(SUM(total_ars) FILTER (WHERE payment_status = 'pending' AND order_status <> 'cancelled'), 0) AS "pendingTotalArs",
+            CAST(COUNT(*) FILTER (WHERE order_status = 'cancelled') AS integer) AS "cancelledCount",
+            COALESCE(SUM(total_ars) FILTER (WHERE payment_status = 'approved' AND order_status <> 'cancelled' AND payment_method = 'cash'), 0) AS "cashTotalArs",
+            COALESCE(SUM(total_ars) FILTER (WHERE payment_status = 'approved' AND order_status <> 'cancelled' AND payment_method = 'card'), 0) AS "cardTotalArs",
+            COALESCE(SUM(total_ars) FILTER (WHERE payment_status = 'approved' AND order_status <> 'cancelled' AND payment_method = 'mercadopago'), 0) AS "mercadoPagoTotalArs"
+     FROM day_orders`;
 
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 app.use(helmet({
@@ -99,8 +124,8 @@ async function requireEnabledRestaurant(req, res, next) {
   }
 }
 
-function serviceUnavailable(res) {
-  return res.status(503).set('Cache-Control', 'no-store').json({ code: 'CAFE_UNAVAILABLE', error: serviceUnavailableMessage });
+function serviceUnavailable(res, message = serviceUnavailableMessage) {
+  return res.status(503).set('Cache-Control', 'no-store').json({ code: 'CAFE_UNAVAILABLE', error: message });
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -245,7 +270,7 @@ app.patch('/api/platform/subscriptions/:id', requirePlatformAdmin, async (req, r
 app.get('/api/auth/me', requireAuth, requireEnabledRestaurant, async (req, res) => {
   const result = await query(
     `SELECT id, slug, name, email, table_count AS "tableCount", plan, subscription_status AS "subscriptionStatus",
-            subscription_due_at AS "subscriptionDueAt"
+            subscription_due_at AS "subscriptionDueAt", is_open AS "isOpen"
      FROM restaurants WHERE id = $1`,
     [req.restaurantId],
   );
@@ -256,12 +281,13 @@ app.get('/api/auth/me', requireAuth, requireEnabledRestaurant, async (req, res) 
 app.get('/api/public/:slug', async (req, res) => {
   const table = Number(req.query.table);
   const restaurantResult = await query(
-    'SELECT id, slug, name, table_count, is_enabled FROM restaurants WHERE slug = $1',
+    'SELECT id, slug, name, table_count, is_enabled, is_open FROM restaurants WHERE slug = $1',
     [req.params.slug],
   );
   const restaurant = restaurantResult.rows[0];
   if (!restaurant) return res.status(404).json({ error: 'No encontramos este local.' });
   if (!restaurant.is_enabled) return serviceUnavailable(res);
+  if (!restaurant.is_open) return serviceUnavailable(res, restaurantClosedMessage);
   if (!Number.isInteger(table) || table < 1 || table > restaurant.table_count) {
     return res.status(404).json({ error: 'La mesa del enlace no es válida.' });
   }
@@ -284,6 +310,7 @@ app.post('/api/public/:slug/orders', async (req, res) => {
   const restaurant = restaurantResult.rows[0];
   if (!restaurant) return res.status(404).json({ error: 'No encontramos este local.' });
   if (!restaurant.is_enabled) return serviceUnavailable(res);
+  if (!restaurant.is_open) return serviceUnavailable(res, restaurantClosedMessage);
   if (table < 1 || table > restaurant.table_count) return res.status(400).json({ error: 'La mesa no es válida.' });
   const quantities = new Map();
   for (const row of requested) {
@@ -306,6 +333,19 @@ app.post('/api/public/:slug/orders', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const serviceResult = await client.query(
+      'SELECT is_enabled, is_open FROM restaurants WHERE id = $1 FOR SHARE',
+      [restaurant.id],
+    );
+    const service = serviceResult.rows[0];
+    if (!service?.is_enabled) {
+      await client.query('ROLLBACK');
+      return serviceUnavailable(res);
+    }
+    if (!service.is_open) {
+      await client.query('ROLLBACK');
+      return serviceUnavailable(res, restaurantClosedMessage);
+    }
     await client.query(
       `INSERT INTO orders (id, restaurant_id, table_number, payment_method, items, total_ars)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -349,6 +389,106 @@ app.get('/api/admin/orders', requireAuth, async (req, res) => {
     [req.restaurantId],
   );
   res.json(result.rows);
+});
+
+app.patch('/api/admin/service', requireAuth, async (req, res) => {
+  const parsed = serviceStatusSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'El estado del local no es válido.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const restaurant = await client.query('SELECT id FROM restaurants WHERE id = $1 FOR UPDATE', [req.restaurantId]);
+    if (!restaurant.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No encontramos este local.' });
+    }
+    if (parsed.data.isOpen) {
+      const closure = await client.query(
+        `SELECT 1 FROM restaurant_day_closures
+         WHERE restaurant_id = $1
+           AND business_date = (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date`,
+        [req.restaurantId],
+      );
+      if (closure.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'El día ya fue cerrado. Podrás abrir el local mañana.' });
+      }
+    }
+    const result = await client.query(
+      'UPDATE restaurants SET is_open = $1 WHERE id = $2 RETURNING is_open AS "isOpen"',
+      [parsed.data.isOpen, req.restaurantId],
+    );
+    await client.query('COMMIT');
+    res.set('Cache-Control', 'no-store').json(result.rows[0]);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/admin/day-close', requireAuth, async (req, res) => {
+  const closure = await query(
+    `SELECT to_char(business_date, 'YYYY-MM-DD') AS date,
+            orders_count AS "ordersCount", paid_count AS "paidCount", paid_total_ars AS "paidTotalArs",
+            pending_count AS "pendingCount", pending_total_ars AS "pendingTotalArs", cancelled_count AS "cancelledCount",
+            cash_total_ars AS "cashTotalArs", card_total_ars AS "cardTotalArs",
+            mercado_pago_total_ars AS "mercadoPagoTotalArs", TRUE AS "isClosed", closed_at AS "closedAt"
+     FROM restaurant_day_closures
+     WHERE restaurant_id = $1
+       AND business_date = (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date`,
+    [req.restaurantId],
+  );
+  if (closure.rowCount) return res.set('Cache-Control', 'no-store').json(closure.rows[0]);
+  const report = await query(dayCloseReportSql, [req.restaurantId]);
+  res.set('Cache-Control', 'no-store').json({ ...report.rows[0], isClosed: false, closedAt: null });
+});
+
+app.post('/api/admin/day-close', requireAuth, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const restaurant = await client.query('SELECT id FROM restaurants WHERE id = $1 FOR UPDATE', [req.restaurantId]);
+    if (!restaurant.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No encontramos este local.' });
+    }
+    const existing = await client.query(
+      `SELECT to_char(business_date, 'YYYY-MM-DD') AS date,
+              orders_count AS "ordersCount", paid_count AS "paidCount", paid_total_ars AS "paidTotalArs",
+              pending_count AS "pendingCount", pending_total_ars AS "pendingTotalArs", cancelled_count AS "cancelledCount",
+              cash_total_ars AS "cashTotalArs", card_total_ars AS "cardTotalArs",
+              mercado_pago_total_ars AS "mercadoPagoTotalArs", TRUE AS "isClosed", closed_at AS "closedAt"
+       FROM restaurant_day_closures
+       WHERE restaurant_id = $1
+         AND business_date = (NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date`,
+      [req.restaurantId],
+    );
+    if (existing.rowCount) {
+      await client.query('COMMIT');
+      return res.set('Cache-Control', 'no-store').json(existing.rows[0]);
+    }
+    const report = (await client.query(dayCloseReportSql, [req.restaurantId])).rows[0];
+    const closure = await client.query(
+      `INSERT INTO restaurant_day_closures (
+         restaurant_id, business_date, orders_count, paid_count, paid_total_ars,
+         pending_count, pending_total_ars, cancelled_count, cash_total_ars, card_total_ars, mercado_pago_total_ars
+       ) VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING closed_at AS "closedAt"`,
+      [req.restaurantId, report.date, report.ordersCount, report.paidCount, report.paidTotalArs,
+        report.pendingCount, report.pendingTotalArs, report.cancelledCount, report.cashTotalArs,
+        report.cardTotalArs, report.mercadoPagoTotalArs],
+    );
+    await client.query('UPDATE restaurants SET is_open = FALSE WHERE id = $1', [req.restaurantId]);
+    await client.query('COMMIT');
+    res.set('Cache-Control', 'no-store').json({ ...report, isClosed: true, closedAt: closure.rows[0].closedAt });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 });
 
 app.get('/api/admin/menu', requireAuth, async (req, res) => {

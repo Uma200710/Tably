@@ -12,6 +12,8 @@ let dashboardOrdersRefresh = null;
 let dashboardKnownOrderIds = new Set();
 let dashboardAudioContext = null;
 let dashboardSoundEnabled = false;
+let dashboardDayCloseReport = null;
+let dashboardRestaurantIsOpen = true;
 
 function setTheme(theme, persist = true) {
   document.documentElement.dataset.theme = theme;
@@ -130,6 +132,168 @@ function bindOrderAlertControls() {
   });
 }
 
+function dayCloseSummaryHtml(report) {
+  if (!report) return '<div class="empty">No se pudo cargar el cierre del día. Actualizá el resumen para volver a intentarlo.</div>';
+  const [year, month, day] = report.date.split('-').map(Number);
+  const businessDate = new Date(Date.UTC(year, month - 1, day, 15));
+  const dateLabel = new Intl.DateTimeFormat('es-AR', {
+    dateStyle: 'full',
+    timeZone: 'America/Argentina/Buenos_Aires',
+  }).format(businessDate);
+  const amount = (value) => money(Number(value) || 0);
+  const closedAt = report.closedAt
+    ? new Intl.DateTimeFormat('es-AR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date(report.closedAt))
+    : null;
+  return `<p class="day-close-date">${esc(dateLabel)} · Hora de Argentina</p>
+    ${report.isClosed ? `<p class="day-close-closed"><span class="pill disabled">Día cerrado</span><span>Registrado el ${esc(closedAt || 'hoy')} · Los importes quedaron guardados.</span></p>` : ''}
+    <div class="day-close-grid">
+      <article class="day-close-stat featured"><span>Ventas cobradas</span><strong>${amount(report.paidTotalArs)}</strong><small>${report.paidCount} pedidos con cobro confirmado</small></article>
+      <article class="day-close-stat"><span>Cobros pendientes</span><strong>${amount(report.pendingTotalArs)}</strong><small>${report.pendingCount} pedidos por cobrar</small></article>
+      <article class="day-close-stat"><span>Pedidos registrados</span><strong>${report.ordersCount}</strong><small>${report.cancelledCount} cancelados</small></article>
+    </div>
+    <section class="day-close-methods"><h3>Cobros confirmados por medio</h3>
+      <div><span>Efectivo</span><strong>${amount(report.cashTotalArs)}</strong></div>
+      <div><span>Tarjeta</span><strong>${amount(report.cardTotalArs)}</strong></div>
+      <div><span>Mercado Pago</span><strong>${amount(report.mercadoPagoTotalArs)}</strong></div>
+    </section>
+    <p class="muted small day-close-note">${report.isClosed ? 'Este cierre quedó registrado y los pedidos por QR permanecen detenidos hasta mañana.' : 'El resumen incluye los pedidos creados hoy. Las ventas cuentan solo cobros confirmados; los pendientes se muestran aparte.'}</p>`;
+}
+
+function updateDayCloseControls(report) {
+  const status = document.querySelector('#day-close-status');
+  if (status) {
+    status.className = `pill ${report.isClosed ? 'disabled' : 'green'}`;
+    status.textContent = report.isClosed ? 'Día cerrado' : 'Día abierto';
+  }
+  const button = document.querySelector('#close-day');
+  if (button) {
+    button.disabled = report.isClosed;
+    button.textContent = report.isClosed ? 'Día cerrado' : 'Cerrar el día';
+  }
+  const downloadButton = document.querySelector('#download-day-close');
+  if (downloadButton) {
+    downloadButton.disabled = false;
+    downloadButton.textContent = report.isClosed ? 'Descargar cierre CSV' : 'Descargar resumen CSV';
+  }
+  updateRestaurantServiceStatus(report.isClosed ? false : dashboardRestaurantIsOpen, report.isClosed);
+}
+
+async function refreshDayCloseReport() {
+  const report = await api('/api/admin/day-close');
+  dashboardDayCloseReport = report;
+  const summary = document.querySelector('#day-close-summary');
+  if (summary) summary.innerHTML = dayCloseSummaryHtml(report);
+  updateDayCloseControls(report);
+  return report;
+}
+
+function downloadDayCloseReport() {
+  if (!dashboardDayCloseReport) return;
+  const report = dashboardDayCloseReport;
+  const rows = [
+    ['Cierre del día', report.date],
+    ['Pedidos registrados', report.ordersCount],
+    ['Pedidos cobrados', report.paidCount],
+    ['Ventas cobradas ARS', report.paidTotalArs],
+    ['Pedidos por cobrar', report.pendingCount],
+    ['Cobros pendientes ARS', report.pendingTotalArs],
+    ['Efectivo cobrado ARS', report.cashTotalArs],
+    ['Tarjeta cobrada ARS', report.cardTotalArs],
+    ['Mercado Pago cobrado ARS', report.mercadoPagoTotalArs],
+    ['Pedidos cancelados', report.cancelledCount],
+    ['Estado del día', report.isClosed ? 'Cerrado' : 'Abierto'],
+    ...(report.closedAt ? [['Cierre registrado', report.closedAt]] : []),
+  ];
+  const csvCell = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+  const csv = rows.map((row) => row.map(csvCell).join(';')).join('\r\n');
+  const file = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(file);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `cierre-tably-${report.date}.csv`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function bindDayCloseControls() {
+  document.querySelector('#refresh-day-close')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await refreshDayCloseReport();
+      toast('Cierre del día actualizado.');
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.querySelector('#download-day-close')?.addEventListener('click', downloadDayCloseReport);
+  document.querySelector('#close-day')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const pendingNote = dashboardDayCloseReport?.pendingCount
+      ? ` Hay ${dashboardDayCloseReport.pendingCount} cobros pendientes; quedarán registrados por separado.`
+      : '';
+    if (!await confirmAction(`Al cerrar el día se guardará este resumen, el local dejará de aceptar pedidos por QR y podrás volver a abrirlo mañana.${pendingNote} ¿Querés continuar?`)) return;
+    button.disabled = true;
+    try {
+      const report = await api('/api/admin/day-close', { method: 'POST', body: '{}' });
+      dashboardDayCloseReport = report;
+      dashboardRestaurantIsOpen = false;
+      const summary = document.querySelector('#day-close-summary');
+      if (summary) summary.innerHTML = dayCloseSummaryHtml(report);
+      updateDayCloseControls(report);
+      toast('Día cerrado. El resumen quedó guardado y los pedidos por QR están detenidos.');
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message);
+    }
+  });
+}
+
+function updateRestaurantServiceStatus(isOpen, dayClosed = false) {
+  const label = document.querySelector('#service-status-label');
+  const description = document.querySelector('#service-status-description');
+  const button = document.querySelector('#service-toggle');
+  if (!label || !description || !button) return;
+  label.className = `pill ${isOpen ? 'green' : 'disabled'}`;
+  label.textContent = isOpen ? 'Local abierto' : 'Local cerrado';
+  description.textContent = dayClosed
+    ? 'El d\u00eda ya fue cerrado. Podr\u00e1s abrir el local ma\u00f1ana.'
+    : isOpen
+      ? 'Los QR aceptan pedidos. El panel sigue disponible.'
+      : 'Los QR muestran un aviso y no aceptan pedidos. Pod\u00e9s reabrir el local desde aqu\u00ed.';
+  button.className = `btn small-btn ${isOpen || dayClosed ? 'secondary' : 'green'}`;
+  button.disabled = dayClosed;
+  button.dataset.isOpen = String(isOpen);
+  button.setAttribute('aria-pressed', String(isOpen));
+  button.textContent = dayClosed ? 'D\u00eda cerrado' : isOpen ? 'Cerrar local' : 'Abrir local';
+}
+
+function bindRestaurantServiceStatus() {
+  const button = document.querySelector('#service-toggle');
+  button?.addEventListener('click', async () => {
+    const isOpen = button.dataset.isOpen === 'true';
+    if (isOpen && !await confirmAction('Al cerrar el local, los clientes ya no podrán enviar pedidos por QR. El panel seguirá disponible para que consultes los pedidos y el cierre del día. ¿Querés continuar?')) return;
+    button.disabled = true;
+    try {
+      const result = await api('/api/admin/service', {
+        method: 'PATCH',
+        body: JSON.stringify({ isOpen: !isOpen }),
+      });
+      dashboardRestaurantIsOpen = result.isOpen;
+      updateRestaurantServiceStatus(result.isOpen);
+      toast(result.isOpen ? 'El local está abierto y acepta pedidos.' : 'El local está cerrado. No se aceptan pedidos por QR.');
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 function confirmAction(message) {
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
@@ -189,6 +353,7 @@ function renderAuth(showRegister = false) {
   document.title = 'Tably · Pedidos y mesas';
   dashboardSoundEnabled = false;
   dashboardKnownOrderIds = new Set();
+  dashboardDayCloseReport = null;
   if (dashboardAudioContext) {
     void dashboardAudioContext.close().catch(() => {});
     dashboardAudioContext = null;
@@ -592,6 +757,7 @@ async function refreshDashboardOrders() {
         target?.focus({ preventScroll: true });
       }
       window.scrollTo({ top: scrollY, behavior: 'instant' });
+      refreshDayCloseReport().catch(() => {});
     }
     updateOrderAttention(orders);
     if (newOrders.length) {
@@ -614,9 +780,12 @@ async function renderDashboard() {
   stopDashboardPolling();
   app.innerHTML = '<div class="loading">Cargando tu local…</div>';
   try {
-    const [restaurant, orders, tables, menu] = await Promise.all([
+    const [restaurant, orders, tables, menu, dayCloseReport] = await Promise.all([
       api('/api/auth/me'), api('/api/admin/orders'), api('/api/admin/tables'), api('/api/admin/menu'),
+      api('/api/admin/day-close').catch(() => null),
     ]);
+    dashboardDayCloseReport = dayCloseReport;
+    dashboardRestaurantIsOpen = restaurant.isOpen !== false;
     topbarMeta.innerHTML = `${esc(restaurant.name)} <button class="text-btn" id="logout">Salir</button>`;
     const price = restaurant.tableCount > 15 ? 45000 : 30000;
     const subscriptionLabels = { trial: 'Prueba inicial', pending: 'Pago pendiente', authorized: 'Activa', cancelled: 'Cancelada', paused: 'Pausada' };
@@ -648,9 +817,11 @@ async function renderDashboard() {
     </article>`).join('');
     const occupiedTables = tables.filter((table) => table.occupied).length;
     app.innerHTML = `<div class="heading-row"><div><h1>Panel del local</h1><p>${esc(restaurant.name)} · ${restaurant.tableCount} mesas · <a href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Abrir menú</a></p></div></div>
+      <section class="service-status-bar"><div class="service-status-info"><span class="pill ${restaurant.isOpen === false ? 'disabled' : 'green'}" id="service-status-label" aria-live="polite">${restaurant.isOpen === false ? 'Local cerrado' : 'Local abierto'}</span><div><strong>Pedidos por QR</strong><p id="service-status-description" class="muted small">${restaurant.isOpen === false ? 'Los QR muestran un aviso y no aceptan pedidos. Podés reabrir el local desde aquí.' : 'Los QR aceptan pedidos. El panel sigue disponible.'}</p></div></div><button class="btn small-btn ${restaurant.isOpen === false ? 'green' : 'secondary'}" id="service-toggle" type="button" data-is-open="${restaurant.isOpen !== false}" aria-pressed="${restaurant.isOpen !== false}">${restaurant.isOpen === false ? 'Abrir local' : 'Cerrar local'}</button></section>
       <nav class="dashboard-tabs" role="tablist" aria-label="Secciones del local">
         <button class="dashboard-tab" type="button" role="tab" id="tab-menu" aria-controls="panel-menu" data-dashboard-tab="menu"><span>Menú</span><span class="tab-count">${menu.length}</span></button>
         <button class="dashboard-tab" type="button" role="tab" id="tab-orders" aria-controls="panel-orders" data-dashboard-tab="orders"><span>Pedidos</span><span class="tab-count" data-orders-count>${orders.length}</span><span class="tab-attention-count" data-order-attention-count hidden></span></button>
+        <button class="dashboard-tab" type="button" role="tab" id="tab-day-close" aria-controls="panel-day-close" data-dashboard-tab="day-close"><span>Cierre del día</span></button>
         <button class="dashboard-tab" type="button" role="tab" id="tab-tables" aria-controls="panel-tables" data-dashboard-tab="tables"><span>Mesas</span><span class="tab-count" data-tables-count>${occupiedTables} ocupadas</span></button>
       </nav>
       <div class="dashboard-panels">
@@ -678,6 +849,10 @@ async function renderDashboard() {
             <div class="order-attention" id="order-attention" role="status" aria-live="polite" aria-atomic="true" hidden></div>
             <div class="orders" id="orders-list">${orderListHtml(orders)}</div></section>
         </section>
+        <section class="dashboard-tab-panel" id="panel-day-close" role="tabpanel" aria-labelledby="tab-day-close" data-dashboard-panel="day-close" hidden>
+          <section class="section"><div class="section-head day-close-head"><div><h2>Cierre del día</h2><span class="muted small">Resumen de ventas y cobros de hoy</span></div><div class="day-close-actions"><span class="pill ${dayCloseReport ? dayCloseReport.isClosed ? 'disabled' : 'green' : ''}" id="day-close-status" role="status">${dayCloseReport ? dayCloseReport.isClosed ? 'Día cerrado' : 'Día abierto' : 'Estado no disponible'}</span><button class="btn secondary small-btn" type="button" id="refresh-day-close">Actualizar</button><button class="btn primary small-btn" type="button" id="download-day-close" ${dayCloseReport ? '' : 'disabled'}>${dayCloseReport?.isClosed ? 'Descargar cierre CSV' : 'Descargar resumen CSV'}</button><button class="btn secondary small-btn" type="button" id="close-day" ${dayCloseReport && !dayCloseReport.isClosed ? '' : 'disabled'}>${dayCloseReport?.isClosed ? 'Día cerrado' : 'Cerrar el día'}</button></div></div>
+            <div id="day-close-summary">${dayCloseSummaryHtml(dayCloseReport)}</div></section>
+        </section>
         <section class="dashboard-tab-panel" id="panel-tables" role="tabpanel" aria-labelledby="tab-tables" data-dashboard-panel="tables" hidden>
           <section class="section"><div class="section-head"><div><h2>Mesas</h2><span class="muted small">Una mesa se ocupa con el primer pedido y se libera desde aquí.</span></div></div><div class="table-grid">${tableCards}</div></section>
         </section>
@@ -693,7 +868,10 @@ async function renderDashboard() {
       renderAuth();
     });
     document.querySelectorAll('[data-dashboard-tab]').forEach((button) => {
-      button.addEventListener('click', () => setDashboardTab(button.dataset.dashboardTab));
+      button.addEventListener('click', () => {
+        setDashboardTab(button.dataset.dashboardTab);
+        if (button.dataset.dashboardTab === 'day-close') refreshDayCloseReport().catch(() => {});
+      });
       button.addEventListener('keydown', (event) => {
         if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
         event.preventDefault();
@@ -707,11 +885,15 @@ async function renderDashboard() {
     let initialTab = 'orders';
     try {
       const savedTab = localStorage.getItem('tably-dashboard-tab');
-      if (['menu', 'orders', 'tables'].includes(savedTab)) initialTab = savedTab;
+      if (['menu', 'orders', 'day-close', 'tables'].includes(savedTab)) initialTab = savedTab;
     } catch {}
     setDashboardTab(initialTab);
+    updateRestaurantServiceStatus(restaurant.isOpen !== false, dayCloseReport?.isClosed === true);
+    if (dayCloseReport) updateDayCloseControls(dayCloseReport);
+    bindRestaurantServiceStatus();
     bindMenuControls();
     bindMenuImport();
+    bindDayCloseControls();
     bindOrderAlertControls();
     bindOrderControls();
     bindTableControls();

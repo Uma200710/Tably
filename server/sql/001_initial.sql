@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS restaurants (
 );
 
 ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS is_open BOOLEAN NOT NULL DEFAULT TRUE;
 
 ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS subscription_due_at TIMESTAMPTZ;
 UPDATE restaurants SET subscription_due_at = CASE
@@ -55,6 +56,22 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 CREATE INDEX IF NOT EXISTS orders_restaurant_created_idx ON orders(restaurant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS restaurant_day_closures (
+  restaurant_id UUID NOT NULL REFERENCES restaurants(id) ON DELETE CASCADE,
+  business_date DATE NOT NULL,
+  orders_count INTEGER NOT NULL,
+  paid_count INTEGER NOT NULL,
+  paid_total_ars BIGINT NOT NULL,
+  pending_count INTEGER NOT NULL,
+  pending_total_ars BIGINT NOT NULL,
+  cancelled_count INTEGER NOT NULL,
+  cash_total_ars BIGINT NOT NULL,
+  card_total_ars BIGINT NOT NULL,
+  mercado_pago_total_ars BIGINT NOT NULL,
+  closed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (restaurant_id, business_date)
+);
 
 CREATE TABLE IF NOT EXISTS restaurant_tables (
   restaurant_id UUID NOT NULL REFERENCES restaurants(id) ON DELETE CASCADE,
