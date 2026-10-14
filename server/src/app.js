@@ -15,6 +15,7 @@ const app = express();
 const root = process.cwd();
 const webRoot = path.join(root, 'web');
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: 'draft-7' });
+const serviceUnavailableMessage = '¡Lo sentimos! Este servicio no está disponible ahora mismo.';
 const registerSchema = z.object({
   name: z.string().trim().min(2).max(80),
   email: z.string().trim().email().max(254),
@@ -71,6 +72,23 @@ function setPlatformSession(res, email) {
   });
 }
 
+async function requireEnabledRestaurant(req, res, next) {
+  try {
+    const result = await query('SELECT is_enabled FROM restaurants WHERE id = $1', [req.restaurantId]);
+    if (!result.rowCount) return res.status(401).json({ error: 'La cuenta ya no existe.' });
+    if (!result.rows[0].is_enabled) {
+      return res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'Esta cuenta está deshabilitada. Contactá a Tably.' });
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
+function serviceUnavailable(res) {
+  return res.status(503).set('Cache-Control', 'no-store').json({ code: 'CAFE_UNAVAILABLE', error: serviceUnavailableMessage });
+}
+
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/api/auth/register', authLimiter, async (req, res) => {
@@ -121,10 +139,13 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Email o contraseña incorrectos.' });
-  const result = await query('SELECT id, email, password_hash FROM restaurants WHERE email = $1', [parsed.data.email.toLowerCase()]);
+  const result = await query('SELECT id, email, password_hash, is_enabled FROM restaurants WHERE email = $1', [parsed.data.email.toLowerCase()]);
   const restaurant = result.rows[0];
   if (!restaurant || !(await bcrypt.compare(parsed.data.password, restaurant.password_hash))) {
     return res.status(401).json({ error: 'Email o contraseña incorrectos.' });
+  }
+  if (!restaurant.is_enabled) {
+    return res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'Esta cuenta está deshabilitada. Contactá a Tably.' });
   }
   setSession(res, restaurant.id);
   res.json({ ok: true });
@@ -158,10 +179,21 @@ app.get('/api/platform/subscriptions', requirePlatformAdmin, async (_req, res) =
   const result = await query(
     `SELECT id, name, email, table_count AS "tableCount", plan,
             subscription_status AS "subscriptionStatus", subscription_due_at AS "subscriptionDueAt",
-            subscription_paid_at AS "subscriptionPaidAt", created_at AS "createdAt"
+            subscription_paid_at AS "subscriptionPaidAt", created_at AS "createdAt", is_enabled AS enabled
      FROM restaurants ORDER BY subscription_due_at ASC, name ASC`,
   );
   res.json(result.rows);
+});
+
+app.patch('/api/platform/subscriptions/:id/access', requirePlatformAdmin, async (req, res) => {
+  const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'El estado de acceso no es válido.' });
+  const result = await query(
+    'UPDATE restaurants SET is_enabled = $1 WHERE id = $2 RETURNING id, is_enabled AS enabled',
+    [parsed.data.enabled, req.params.id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'No encontramos ese café.' });
+  res.json(result.rows[0]);
 });
 
 app.post('/api/platform/subscriptions/:id/paid', requirePlatformAdmin, async (req, res) => {
@@ -191,7 +223,7 @@ app.patch('/api/platform/subscriptions/:id', requirePlatformAdmin, async (req, r
   res.sendStatus(204);
 });
 
-app.get('/api/auth/me', requireAuth, async (req, res) => {
+app.get('/api/auth/me', requireAuth, requireEnabledRestaurant, async (req, res) => {
   const result = await query(
     `SELECT id, slug, name, email, table_count AS "tableCount", plan, subscription_status AS "subscriptionStatus",
             subscription_due_at AS "subscriptionDueAt"
@@ -205,11 +237,12 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 app.get('/api/public/:slug', async (req, res) => {
   const table = Number(req.query.table);
   const restaurantResult = await query(
-    'SELECT id, slug, name, table_count FROM restaurants WHERE slug = $1',
+    'SELECT id, slug, name, table_count, is_enabled FROM restaurants WHERE slug = $1',
     [req.params.slug],
   );
   const restaurant = restaurantResult.rows[0];
   if (!restaurant) return res.status(404).json({ error: 'No encontramos este local.' });
+  if (!restaurant.is_enabled) return serviceUnavailable(res);
   if (!Number.isInteger(table) || table < 1 || table > restaurant.table_count) {
     return res.status(404).json({ error: 'La mesa del enlace no es válida.' });
   }
@@ -231,6 +264,7 @@ app.post('/api/public/:slug/orders', async (req, res) => {
   const restaurantResult = await query('SELECT * FROM restaurants WHERE slug = $1', [req.params.slug]);
   const restaurant = restaurantResult.rows[0];
   if (!restaurant) return res.status(404).json({ error: 'No encontramos este local.' });
+  if (!restaurant.is_enabled) return serviceUnavailable(res);
   if (table < 1 || table > restaurant.table_count) return res.status(400).json({ error: 'La mesa no es válida.' });
   const quantities = new Map();
   for (const row of requested) {
@@ -268,6 +302,8 @@ app.get('/api/public/orders/:id', async (req, res) => {
   if (!result.rowCount) return res.status(404).json({ error: 'No encontramos el pedido.' });
   res.set('Cache-Control', 'no-store').json(result.rows[0]);
 });
+
+app.use('/api/admin', requireAuth, requireEnabledRestaurant);
 
 app.get('/api/admin/orders', requireAuth, async (req, res) => {
   const result = await query(

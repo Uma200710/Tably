@@ -1,8 +1,18 @@
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import app from '../src/app.js';
-import { pool, query } from '../src/db.js';
+
+const configuredDatabaseUrl = process.env.DATABASE_URL;
+const testDatabaseUrl = process.env.TABLY_TEST_DATABASE_URL;
+if (!testDatabaseUrl) throw new Error('Set TABLY_TEST_DATABASE_URL to an isolated test database before running the smoke test.');
+if (configuredDatabaseUrl && new URL(testDatabaseUrl).host === new URL(configuredDatabaseUrl).host) {
+  throw new Error('TABLY_TEST_DATABASE_URL must use a different database host than DATABASE_URL.');
+}
+process.env.DATABASE_URL = testDatabaseUrl;
+const [{ default: app }, { pool, query }] = await Promise.all([
+  import('../server/src/app.js'),
+  import('../server/src/db.js'),
+]);
 
 const server = app.listen(0, '127.0.0.1');
 await new Promise((resolve) => server.once('listening', resolve));

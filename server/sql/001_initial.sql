@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS restaurants (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
 ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS subscription_due_at TIMESTAMPTZ;
 UPDATE restaurants SET subscription_due_at = CASE
   WHEN subscription_status = 'authorized' THEN NOW() + INTERVAL '30 days'

@@ -12,7 +12,7 @@
     "start": "node server/src/index.js",
     "build": "node scripts/build.js",
     "db:setup": "node server/src/migrate.js",
-    "smoke": "node server/test/live-smoke.js",
+    "smoke": "node scripts/live-smoke.js",
     "test": "node --test"
   },
   "dependencies": {

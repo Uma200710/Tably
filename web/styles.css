@@ -100,6 +100,7 @@ a { color: inherit; }
 .section-head h2 { margin: 0; font: 600 21px 'Fraunces', serif; }
 .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 9px; background: var(--soft); color: var(--muted); font-size: 12px; font-weight: 700; }
 .pill.green { background: var(--green-soft); color: var(--green); }
+.pill.disabled { background: var(--accent-soft); color: var(--accent); }
 .orders { display: grid; gap: 10px; }
 .order-group { display: grid; gap: 10px; }
 .order-group + .order-group { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
@@ -139,10 +140,15 @@ a { color: inherit; }
 .platform-admin { max-width: 980px; margin: 0 auto; }
 .platform-cafe-list { display: grid; gap: 14px; margin-top: 20px; }
 .platform-cafe { padding: 20px; }
+.platform-statuses { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .platform-billing-controls { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(150px, 1fr) auto; gap: 12px; align-items: end; }
 .platform-billing-controls .field > span { font-size: 13px; font-weight: 600; }
-.platform-actions { display: flex; gap: 8px; }
+.platform-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .customer { max-width: 520px; margin: 0 auto; }
+.service-unavailable { margin-top: 10vh; text-align: center; }
+.service-unavailable-mark { display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 16px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 28px; font-weight: 700; }
+.service-unavailable h1 { margin: 0 0 12px; font: 600 28px/1.15 'Fraunces', serif; }
+.service-unavailable p { line-height: 1.55; }
 .customer-head { padding: 18px 0 16px; border-bottom: 1px solid var(--line); }
 .customer-head h1 { margin: 0; font: 600 30px 'Fraunces', serif; }
 .menu-list { display: grid; }

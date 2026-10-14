@@ -80,7 +80,11 @@ async function api(url, options = {}) {
   });
   if (response.status === 204) return null;
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || 'No se pudo completar la operación.');
+  if (!response.ok) {
+    const error = new Error(body.error || 'No se pudo completar la operación.');
+    error.code = body.code;
+    throw error;
+  }
   return body;
 }
 
@@ -434,10 +438,10 @@ async function renderPlatformAdmin() {
       const due = new Date(cafe.subscriptionDueAt);
       const dueInput = Number.isNaN(due.getTime()) ? '' : [due.getFullYear(), String(due.getMonth() + 1).padStart(2, '0'), String(due.getDate()).padStart(2, '0')].join('-');
       const statusOptions = Object.entries(statusLabels).map(([value, label]) => `<option value="${value}" ${cafe.subscriptionStatus === value ? 'selected' : ''}>${label}</option>`).join('');
-      return `<article class="section platform-cafe" data-cafe-id="${cafe.id}"><div class="section-head"><div><h2>${esc(cafe.name)}</h2><span class="muted small">${esc(cafe.email)} · ${cafe.tableCount} mesas · Plan ${cafe.plan === 'ampliado' ? 'Ampliado' : 'Base'}</span></div><span class="pill">${statusLabels[cafe.subscriptionStatus] || 'Sin estado'}</span></div>
+      return `<article class="section platform-cafe" data-cafe-id="${cafe.id}"><div class="section-head"><div><h2>${esc(cafe.name)}</h2><span class="muted small">${esc(cafe.email)} · ${cafe.tableCount} mesas · Plan ${cafe.plan === 'ampliado' ? 'Ampliado' : 'Base'}</span></div><div class="platform-statuses"><span class="pill">${statusLabels[cafe.subscriptionStatus] || 'Sin estado'}</span><span class="pill ${cafe.enabled ? 'green' : 'disabled'}">${cafe.enabled ? 'Cuenta habilitada' : 'Cuenta deshabilitada'}</span></div></div>
         <div class="platform-billing-controls"><label class="field"><span>Estado</span><select name="status">${statusOptions}</select></label>
           <label class="field"><span>Vencimiento</span><input name="dueAt" type="date" value="${dueInput}" required></label>
-          <div class="platform-actions"><button class="btn secondary small-btn" data-save-subscription="${cafe.id}">Guardar</button><button class="btn green small-btn" data-mark-paid="${cafe.id}">Registrar pago</button></div></div>
+          <div class="platform-actions"><button class="btn secondary small-btn" data-save-subscription="${cafe.id}">Guardar</button><button class="btn green small-btn" data-mark-paid="${cafe.id}">Registrar pago</button><button class="btn ${cafe.enabled ? 'secondary' : 'green'} small-btn" data-toggle-access="${cafe.id}" data-enabled="${cafe.enabled}">${cafe.enabled ? 'Deshabilitar cuenta' : 'Habilitar cuenta'}</button></div></div>
         <p class="muted small">${cafe.subscriptionPaidAt ? `Último pago registrado: ${new Intl.DateTimeFormat('es-AR', { dateStyle: 'medium' }).format(new Date(cafe.subscriptionPaidAt))}` : 'Todavía no hay pagos registrados.'}</p></article>`;
     }).join('');
     app.innerHTML = `<div class="platform-admin"><div class="heading-row"><div><h1>Suscripciones de los cafés</h1><p>Controlá estados, vencimientos y pagos manuales.</p></div><span class="pill">${cafes.length} cafés</span></div>
@@ -463,6 +467,16 @@ async function renderPlatformAdmin() {
         await renderPlatformAdmin();
       } catch (error) { toast(error.message); }
     }));
+    document.querySelectorAll('[data-toggle-access]').forEach((button) => button.addEventListener('click', async () => {
+      const enabled = button.dataset.enabled === 'true';
+      if (enabled && !await confirmAction('Al deshabilitar esta cuenta, el local no podrá ingresar ni aceptar pedidos desde sus QR. ¿Querés continuar?')) return;
+      try {
+        await api(`/api/platform/subscriptions/${button.dataset.toggleAccess}/access`, {
+          method: 'PATCH', body: JSON.stringify({ enabled: !enabled }),
+        });
+        await renderPlatformAdmin();
+      } catch (error) { toast(error.message); }
+    }));
   } catch (error) {
     if (/administrador|administrar|permiso|sesión|sesion/i.test(error.message)) renderPlatformLogin();
     else app.innerHTML = `<section class="panel"><p>${esc(error.message)}</p></section>`;
@@ -476,7 +490,11 @@ async function renderMenu(slug) {
   if (orderId) return renderOrderStatus(orderId, slug, table);
   let menu;
   try { menu = await api(`/api/public/${encodeURIComponent(slug)}?table=${table}`); }
-  catch (error) { app.innerHTML = `<section class="panel customer"><h2>No pudimos abrir el menú</h2><p class="muted">${esc(error.message)}</p></section>`; return; }
+  catch (error) {
+    if (error.code === 'CAFE_UNAVAILABLE') renderUnavailableNotice(error.message);
+    else app.innerHTML = `<section class="panel customer"><h2>No pudimos abrir el menú</h2><p class="muted">${esc(error.message)}</p></section>`;
+    return;
+  }
   const cart = new Map();
   const paymentStorageKey = `tably-payment:${slug}:${table}`;
   let selectedPayment;
@@ -570,7 +588,15 @@ async function renderMenu(slug) {
         history.replaceState({}, '', next);
         window.removeEventListener('popstate', handleCheckoutPopState);
         await renderOrderStatus(order.id, slug, table);
-      } catch (error) { toast(error.message); busyButton(button, false, label); }
+      } catch (error) {
+        if (error.code === 'CAFE_UNAVAILABLE') {
+          window.removeEventListener('popstate', handleCheckoutPopState);
+          renderUnavailableNotice(error.message);
+        } else {
+          toast(error.message);
+          busyButton(button, false, label);
+        }
+      }
     });
   }
 
@@ -587,6 +613,12 @@ async function renderMenu(slug) {
 
   window.addEventListener('popstate', handleCheckoutPopState);
   renderMenuScreen();
+}
+
+function renderUnavailableNotice(message) {
+  stopDashboardPolling();
+  topbarMeta.textContent = '';
+  app.innerHTML = `<section class="panel customer service-unavailable" role="status" aria-live="polite"><span class="service-unavailable-mark" aria-hidden="true">!</span><h1>Servicio temporalmente no disponible</h1><p>${esc(message)}</p><p class="muted small">Por favor, intentá nuevamente más tarde.</p></section>`;
 }
 
 async function renderOrderStatus(orderId, slug, table) {
