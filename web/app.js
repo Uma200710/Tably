@@ -153,8 +153,7 @@ function dayCloseSummaryHtml(report) {
     </div>
     <section class="day-close-methods"><h3>Cobros confirmados por medio</h3>
       <div><span>Efectivo</span><strong>${amount(report.cashTotalArs)}</strong></div>
-      <div><span>Tarjeta</span><strong>${amount(report.cardTotalArs)}</strong></div>
-      <div><span>Mercado Pago</span><strong>${amount(report.mercadoPagoTotalArs)}</strong></div>
+      <div><span>Tarjeta o transferencias</span><strong>${amount(Number(report.cardTotalArs) + Number(report.mercadoPagoTotalArs))}</strong></div>
     </section>
     <p class="muted small day-close-note">${report.isClosed ? 'Este cierre quedó registrado y los pedidos por QR permanecen detenidos hasta mañana.' : 'El resumen incluye los pedidos creados hoy. Las ventas cuentan solo cobros confirmados; los pendientes se muestran aparte.'}</p>`;
 }
@@ -198,8 +197,7 @@ function downloadDayCloseReport() {
     ['Pedidos por cobrar', report.pendingCount],
     ['Cobros pendientes ARS', report.pendingTotalArs],
     ['Efectivo cobrado ARS', report.cashTotalArs],
-    ['Tarjeta cobrada ARS', report.cardTotalArs],
-    ['Mercado Pago cobrado ARS', report.mercadoPagoTotalArs],
+    ['Tarjeta o transferencias cobradas ARS', Number(report.cardTotalArs) + Number(report.mercadoPagoTotalArs)],
     ['Pedidos cancelados', report.cancelledCount],
     ['Estado del día', report.isClosed ? 'Cerrado' : 'Abierto'],
     ...(report.closedAt ? [['Cierre registrado', report.closedAt]] : []),
@@ -400,7 +398,7 @@ function renderAuth(showRegister = false) {
 
 function orderCard(order) {
   const items = order.items.map((item) => `${item.quantity} × ${esc(item.name)}`).join(', ');
-  const payment = order.paymentMethod === 'cash' ? 'Efectivo' : 'Mercado Pago o tarjeta';
+  const payment = order.paymentMethod === 'cash' ? 'Efectivo' : 'Tarjeta o transferencias';
   const needsAttention = orderNeedsAttention(order);
   const actions = [];
   if (order.paymentStatus === 'pending') {
@@ -1062,7 +1060,7 @@ async function renderMenu(slug) {
           <fieldset class="payment-options">
             <legend>Método de pago</legend>
             <label class="payment-option"><input type="radio" name="paymentMethod" value="cash" ${selectedPayment === 'cash' ? 'checked' : ''}><span><strong>Efectivo</strong></span></label>
-            <label class="payment-option"><input type="radio" name="paymentMethod" value="card" ${selectedPayment === 'card' ? 'checked' : ''}><span><strong>Mercado Pago o tarjeta</strong></span></label>
+            <label class="payment-option"><input type="radio" name="paymentMethod" value="card" ${selectedPayment === 'card' ? 'checked' : ''}><span><strong>Tarjeta o transferencias</strong></span></label>
           </fieldset>
           <button class="btn primary pay-confirm" id="place-order">Pagar ${money(total)}</button>
           <div class="payment-explanation" id="payment-explanation" hidden>
@@ -1080,7 +1078,7 @@ async function renderMenu(slug) {
       try { sessionStorage.setItem(paymentStorageKey, selectedPayment); } catch {}
     }));
     document.querySelector('#place-order').addEventListener('click', () => {
-      document.querySelector('#payment-explanation-text').textContent = `Al confirmar, el local recibirá tu pedido y un camarero se acercará a tu mesa para cobrarte ${selectedPayment === 'cash' ? 'en efectivo' : 'con QR o posnet'}.`;
+      document.querySelector('#payment-explanation-text').textContent = `Al confirmar, el local recibirá tu pedido y el personal se acercará a tu mesa para cobrarte ${selectedPayment === 'cash' ? 'en efectivo' : 'con tarjeta, transferencia o Mercado Pago'}.`;
       document.querySelector('#place-order').hidden = true;
       document.querySelector('.payment-options').hidden = true;
       document.querySelector('#payment-explanation').hidden = false;
@@ -1158,7 +1156,7 @@ async function renderOrderStatus(orderId, slug, table) {
       ? statusText
       : rejectedPayment
         ? 'El pedido no se envió a cocina. Volvé al menú para realizar otro pedido.'
-        : `El local recibió el aviso para cobrar ${money(order.totalArs)} en tu mesa. Podés pagar en efectivo o con Mercado Pago/tarjeta.`;
+        : `El local recibió el aviso para cobrar ${money(order.totalArs)} en tu mesa. Podés pagar en efectivo o con tarjeta, transferencia o Mercado Pago.`;
     app.innerHTML = `<section class="panel customer status"><span class="pill ${isPaid ? 'green' : rejectedPayment ? 'collection-needed' : ''}">${isPaid ? statusText : rejectedPayment ? 'Pago rechazado' : 'Pedido registrado'}</span>
       <h2 style="margin-top:16px">${headline}</h2>
       <p class="muted">Mesa ${order.tableNumber} · Total ${money(order.totalArs)}</p>
