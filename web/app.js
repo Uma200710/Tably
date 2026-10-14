@@ -9,6 +9,9 @@ let toastTimer;
 let dashboardOrdersSnapshot = '';
 let dashboardTablesSnapshot = '';
 let dashboardOrdersRefresh = null;
+let dashboardKnownOrderIds = new Set();
+let dashboardAudioContext = null;
+let dashboardSoundEnabled = false;
 
 function setTheme(theme, persist = true) {
   document.documentElement.dataset.theme = theme;
@@ -40,6 +43,91 @@ function toast(message) {
   element.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => element.classList.remove('show'), 2600);
+}
+
+function orderNeedsAttention(order) {
+  return order.orderStatus === 'received' && ['pending', 'approved'].includes(order.paymentStatus);
+}
+
+function playOrderAlert() {
+  if (!dashboardSoundEnabled || dashboardAudioContext?.state !== 'running') return;
+  const context = dashboardAudioContext;
+  const startAt = context.currentTime + 0.02;
+  [880, 660, 880].forEach((frequency, index) => {
+    const startsAt = startAt + index * 0.17;
+    const oscillator = context.createOscillator();
+    const volume = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, startsAt);
+    volume.gain.setValueAtTime(0.0001, startsAt);
+    volume.gain.exponentialRampToValueAtTime(0.07, startsAt + 0.015);
+    volume.gain.exponentialRampToValueAtTime(0.0001, startsAt + 0.15);
+    oscillator.connect(volume);
+    volume.connect(context.destination);
+    oscillator.start(startsAt);
+    oscillator.stop(startsAt + 0.16);
+  });
+}
+
+function updateOrderAttention(orders) {
+  const attentionCount = orders.filter(orderNeedsAttention).length;
+  const countBadge = document.querySelector('[data-order-attention-count]');
+  if (countBadge) {
+    countBadge.hidden = attentionCount === 0;
+    countBadge.textContent = `${attentionCount} ${attentionCount === 1 ? 'pendiente' : 'pendientes'}`;
+  }
+
+  const banner = document.querySelector('#order-attention');
+  if (banner) {
+    const count = String(attentionCount);
+    if (!attentionCount) {
+      banner.hidden = true;
+      banner.dataset.attentionCount = count;
+      banner.replaceChildren();
+    } else if (banner.dataset.attentionCount !== count) {
+      banner.hidden = false;
+      banner.dataset.attentionCount = count;
+      banner.innerHTML = `<span class="order-attention-mark" aria-hidden="true">!</span><div><strong>${attentionCount} ${attentionCount === 1 ? 'pedido requiere' : 'pedidos requieren'} atención</strong><p>Confirmá el cobro si hace falta y pasá el pedido a preparación para quitarlo de pendientes.</p></div>`;
+    }
+  }
+
+  document.title = attentionCount ? `(${attentionCount}) Pedidos pendientes · Tably` : 'Tably · Pedidos y mesas';
+}
+
+function bindOrderAlertControls() {
+  const button = document.querySelector('#order-sound-toggle');
+  const status = document.querySelector('#order-sound-status');
+  if (!button || button.dataset.bound === 'true') return;
+  button.dataset.bound = 'true';
+  button.setAttribute('aria-pressed', String(dashboardSoundEnabled));
+  button.textContent = dashboardSoundEnabled ? 'Silenciar sonido' : 'Activar sonido';
+
+  button.addEventListener('click', async () => {
+    if (dashboardSoundEnabled) {
+      dashboardSoundEnabled = false;
+      button.setAttribute('aria-pressed', 'false');
+      button.textContent = 'Activar sonido';
+      status.textContent = 'Avisos sonoros desactivados.';
+      return;
+    }
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      status.textContent = 'Este navegador no permite avisos sonoros.';
+      return;
+    }
+    try {
+      dashboardAudioContext ||= new AudioContextClass();
+      await dashboardAudioContext.resume();
+      if (dashboardAudioContext.state !== 'running') throw new Error('No se pudo iniciar el audio.');
+      dashboardSoundEnabled = true;
+      button.setAttribute('aria-pressed', 'true');
+      button.textContent = 'Silenciar sonido';
+      status.textContent = 'El aviso sonará cuando llegue un pedido nuevo.';
+    } catch {
+      status.textContent = 'No se pudo activar el sonido. Revisá los permisos del navegador.';
+    }
+  });
 }
 
 function confirmAction(message) {
@@ -98,6 +186,13 @@ function busyButton(button, busy, label) {
 
 function renderAuth(showRegister = false) {
   stopDashboardPolling();
+  document.title = 'Tably · Pedidos y mesas';
+  dashboardSoundEnabled = false;
+  dashboardKnownOrderIds = new Set();
+  if (dashboardAudioContext) {
+    void dashboardAudioContext.close().catch(() => {});
+    dashboardAudioContext = null;
+  }
   topbarMeta.textContent = 'Pedidos y mesas en orden';
   app.innerHTML = `<div class="auth-wrap">
     <section class="intro"><div class="intro-mark">Gestión para cafeterías</div>
@@ -141,6 +236,7 @@ function renderAuth(showRegister = false) {
 function orderCard(order) {
   const items = order.items.map((item) => `${item.quantity} × ${esc(item.name)}`).join(', ');
   const payment = order.paymentMethod === 'cash' ? 'Efectivo' : 'Mercado Pago o tarjeta';
+  const needsAttention = orderNeedsAttention(order);
   const actions = [];
   if (order.paymentStatus === 'pending') {
     actions.push(`<button class="btn green small-btn" data-collect-paid="${order.id}">Confirmar cobro</button>`);
@@ -150,7 +246,8 @@ function orderCard(order) {
     actions.push(`<button class="btn secondary small-btn" data-next-status="${order.id}" data-status="${next}">Pasar a ${next === 'preparing' ? 'preparando' : next === 'ready' ? 'listo' : 'entregado'}</button>`);
   }
   const waitingForCollection = order.paymentStatus === 'pending';
-  return `<article class="order"><div>${waitingForCollection ? `<span class="pill collection-needed">Acercarse a mesa ${order.tableNumber} · cobrar ${payment}</span>` : ''}<strong>Mesa ${order.tableNumber} · ${money(order.totalArs)}</strong>
+  return `<article class="order ${needsAttention ? 'needs-attention' : ''}"><div>${waitingForCollection ? `<span class="pill collection-needed">Acercarse a mesa ${order.tableNumber} · cobrar ${payment}</span>` : ''}<strong>Mesa ${order.tableNumber} · ${money(order.totalArs)}</strong>
+    ${needsAttention ? '<span class="pill order-attention-badge">Pendiente de atención</span>' : ''}
     <div class="order-detail">${items}<br>${payment} · ${order.paymentStatus === 'approved' ? 'Pagado' : 'Pendiente'} · ${order.orderStatus}</div></div>
     <div class="order-actions">${actions.join('')}</div></article>`;
 }
@@ -474,6 +571,8 @@ async function refreshDashboardOrders() {
 
   const refresh = (async () => {
     const [orders, tables] = await Promise.all([api('/api/admin/orders'), api('/api/admin/tables')]);
+    const newOrders = orders.filter((order) => orderNeedsAttention(order) && !dashboardKnownOrderIds.has(order.id));
+    orders.forEach((order) => dashboardKnownOrderIds.add(order.id));
     const snapshot = JSON.stringify(orders);
     if (snapshot !== dashboardOrdersSnapshot) {
       const scrollY = window.scrollY;
@@ -493,6 +592,11 @@ async function refreshDashboardOrders() {
         target?.focus({ preventScroll: true });
       }
       window.scrollTo({ top: scrollY, behavior: 'instant' });
+    }
+    updateOrderAttention(orders);
+    if (newOrders.length) {
+      playOrderAlert();
+      toast(newOrders.length === 1 ? 'Llegó un pedido nuevo. Revisá la pestaña Pedidos.' : `Llegaron ${newOrders.length} pedidos nuevos. Revisá la pestaña Pedidos.`);
     }
     const tablesSnapshot = JSON.stringify(tables.map(({ table, occupied, occupiedAt }) => ({ table, occupied, occupiedAt })));
     if (tablesSnapshot !== dashboardTablesSnapshot) {
@@ -546,7 +650,7 @@ async function renderDashboard() {
     app.innerHTML = `<div class="heading-row"><div><h1>Panel del local</h1><p>${esc(restaurant.name)} · ${restaurant.tableCount} mesas · <a href="/menu/${esc(restaurant.slug)}?table=1" target="_blank" rel="noreferrer">Abrir menú</a></p></div></div>
       <nav class="dashboard-tabs" role="tablist" aria-label="Secciones del local">
         <button class="dashboard-tab" type="button" role="tab" id="tab-menu" aria-controls="panel-menu" data-dashboard-tab="menu"><span>Menú</span><span class="tab-count">${menu.length}</span></button>
-        <button class="dashboard-tab" type="button" role="tab" id="tab-orders" aria-controls="panel-orders" data-dashboard-tab="orders"><span>Pedidos</span><span class="tab-count" data-orders-count>${orders.length}</span></button>
+        <button class="dashboard-tab" type="button" role="tab" id="tab-orders" aria-controls="panel-orders" data-dashboard-tab="orders"><span>Pedidos</span><span class="tab-count" data-orders-count>${orders.length}</span><span class="tab-attention-count" data-order-attention-count hidden></span></button>
         <button class="dashboard-tab" type="button" role="tab" id="tab-tables" aria-controls="panel-tables" data-dashboard-tab="tables"><span>Mesas</span><span class="tab-count" data-tables-count>${occupiedTables} ocupadas</span></button>
       </nav>
       <div class="dashboard-panels">
@@ -570,7 +674,9 @@ async function renderDashboard() {
           </section>
         </section>
         <section class="dashboard-tab-panel" id="panel-orders" role="tabpanel" aria-labelledby="tab-orders" data-dashboard-panel="orders" hidden>
-          <section class="section"><div class="section-head"><h2>Pedidos y cobros</h2><span class="pill">Actualización automática</span></div><div class="orders" id="orders-list">${orderListHtml(orders)}</div></section>
+          <section class="section"><div class="section-head orders-head"><div><h2>Pedidos y cobros</h2><span class="muted small">Actualización automática</span></div><div class="order-alert-controls"><button class="btn secondary small-btn" type="button" id="order-sound-toggle" aria-pressed="false">Activar sonido</button><span class="muted small" id="order-sound-status" aria-live="polite">El sonido está desactivado.</span></div></div>
+            <div class="order-attention" id="order-attention" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+            <div class="orders" id="orders-list">${orderListHtml(orders)}</div></section>
         </section>
         <section class="dashboard-tab-panel" id="panel-tables" role="tabpanel" aria-labelledby="tab-tables" data-dashboard-panel="tables" hidden>
           <section class="section"><div class="section-head"><div><h2>Mesas</h2><span class="muted small">Una mesa se ocupa con el primer pedido y se libera desde aquí.</span></div></div><div class="table-grid">${tableCards}</div></section>
@@ -606,9 +712,12 @@ async function renderDashboard() {
     setDashboardTab(initialTab);
     bindMenuControls();
     bindMenuImport();
+    bindOrderAlertControls();
     bindOrderControls();
     bindTableControls();
     dashboardOrdersSnapshot = JSON.stringify(orders);
+    dashboardKnownOrderIds = new Set(orders.map((order) => order.id));
+    updateOrderAttention(orders);
     dashboardTablesSnapshot = JSON.stringify(tables.map(({ table, occupied, occupiedAt }) => ({ table, occupied, occupiedAt })));
     window.tablyDashboardPoll = setInterval(() => refreshDashboardOrders().catch(() => {}), 8000);
   } catch {
@@ -885,6 +994,10 @@ async function renderOrderStatus(orderId, slug, table) {
     }, 5000);
   } catch (error) { app.innerHTML = `<section class="panel customer"><p>${esc(error.message)}</p></section>`; }
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshDashboardOrders().catch(() => {});
+});
 
 const path = location.pathname;
 const route = path.match(/^\/menu\/([^/]+)\/?$/);

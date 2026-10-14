@@ -127,8 +127,19 @@ a { color: inherit; }
 .order-group + .order-group { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .order-group-head { display: flex; align-items: center; gap: 8px; }
 .order-group-head h3 { margin: 0; font: 600 16px 'Fraunces', serif; }
+.orders-head { align-items: flex-start; }
+.order-alert-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.order-attention { display: grid; grid-template-columns: 36px minmax(0,1fr); align-items: center; gap: 11px; margin: 0 0 15px; padding: 12px 14px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; background: var(--accent-soft); }
+.order-attention[hidden] { display: none; }
+.order-attention-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--surface); color: var(--accent); font-weight: 800; }
+.order-attention strong { display: block; font-size: 14px; }
+.order-attention p { margin: 3px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.tab-attention-count { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; }
+.tab-attention-count[hidden] { display: none; }
 .order { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; align-items: center; border-top: 1px solid var(--line); padding: 13px 0 3px; }
 .order:first-child { border-top: 0; padding-top: 0; }
+.order.needs-attention { padding-left: 10px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; background: var(--accent-soft); }
+.order-attention-badge { margin: 0 0 6px; background: var(--accent-soft); color: var(--accent); }
 .order strong { display: block; margin-bottom: 4px; }
 .order-detail { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .order-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
@@ -274,6 +285,8 @@ a { color: inherit; }
   .menu-toolbar { flex-wrap: wrap; }
   .menu-toolbar .muted { flex: 1 1 100%; }
   .dashboard-tab { flex-basis: 115px; padding: 8px; }
+  .orders-head { align-items: flex-start; flex-direction: column; }
+  .order-alert-controls { justify-content: flex-start; }
   .menu-import { grid-template-columns: minmax(0,1fr); }
   .menu-import #menu-import-status { grid-column: auto; }
   .menu-import-dialog { padding: 16px; }
