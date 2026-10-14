@@ -71,13 +71,16 @@ function parsePrice(value) {
 function cleanProduct(item) {
   const name = String(item.name ?? '').replace(/^[\s•·*\-–—]+/, '').trim();
   const priceArs = parsePrice(item.priceArs ?? item.price ?? item.precio ?? item.valor);
-  if (!name || !priceArs || priceArs > 100_000_000) return null;
+  if (!name || !/\p{L}/u.test(name) || !priceArs || priceArs > 100_000_000) return null;
+  const confidence = Number(item.confidence);
   return {
     name: name.normalize('NFC').slice(0, 100),
     category: String(item.category ?? item.categoria ?? 'General').trim().normalize('NFC').slice(0, 40) || 'General',
     description: String(item.description ?? item.descripcion ?? '').trim().normalize('NFC').slice(0, 240),
     priceArs,
-    selected: true,
+    ...(Number.isFinite(confidence) ? { confidence: Math.max(0, Math.min(100, Math.round(confidence))) } : {}),
+    needsReview: item.needsReview === true,
+    selected: item.selected !== false,
   };
 }
 
@@ -165,14 +168,14 @@ function detectDelimiter(text) {
 function parseTextMenu(text) {
   const products = [];
   let category = 'General';
-  const commonCategories = new Set(['cafes', 'cafe', 'bebidas', 'pasteleria', 'dulces', 'salados', 'sandwiches', 'desayunos', 'almuerzos', 'postres', 'infusiones', 'tragos', 'entradas', 'principales', 'guarniciones', 'ensaladas', 'pizzas', 'hamburguesas']);
+  const commonCategories = new Set(['cafes', 'cafe', 'bebidas', 'otras bebidas', 'para comer', 'combo manana', 'pasteleria', 'dulces', 'salados', 'sandwiches', 'desayunos', 'almuerzos', 'postres', 'infusiones', 'tragos', 'entradas', 'principales', 'guarniciones', 'ensaladas', 'pizzas', 'hamburguesas']);
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.replace(/^[\s•·*]+/, '').trim();
     if (!line) continue;
     const priceMatch = line.match(/(\$\s*)?((?:\d{1,3}(?:[.\s]\d{3})+|\d+)(?:[,.]\d{1,2})?)\s*$/);
     if (!priceMatch) {
       const key = simplify(line).replace(/[:：]$/, '');
-      const uppercaseHeading = line.length <= 32 && line === line.toLocaleUpperCase('es-AR') && !/[.!?]/.test(line);
+      const uppercaseHeading = line.length <= 32 && line === line.toLocaleUpperCase('es-AR') && !/[.!?\d]/.test(line);
       if (commonCategories.has(key) || uppercaseHeading && line.length > 2) category = line.replace(/[:：]$/, '').slice(0, 40);
       continue;
     }
@@ -187,6 +190,235 @@ function parseTextMenu(text) {
     if (product) products.push(product);
   }
   return deduplicate(products);
+}
+
+const MENU_CATEGORIES = new Set([
+  'cafe', 'cafes', 'bebidas', 'otras bebidas', 'para comer', 'combo manana', 'comida', 'desayunos',
+  'almuerzos', 'cenas', 'pasteleria', 'dulces', 'salados', 'sandwiches', 'postres', 'infusiones',
+  'tragos', 'entradas', 'principales', 'guarniciones', 'ensaladas', 'pizzas', 'hamburguesas',
+]);
+
+function wordCenter(word) {
+  return (word.bbox.x0 + word.bbox.x1) / 2;
+}
+
+function wordMiddleY(word) {
+  return (word.bbox.y0 + word.bbox.y1) / 2;
+}
+
+function findColumnSplit(words, width, height) {
+  const intervals = words
+    .filter((word) => wordMiddleY(word) >= height * 0.22 && wordMiddleY(word) <= height * 0.9)
+    .map((word) => ({ start: Math.max(0, word.bbox.x0), end: Math.min(width, word.bbox.x1) }))
+    .filter((interval) => interval.end > interval.start)
+    .sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const interval of intervals) {
+    const previous = merged.at(-1);
+    if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
+    else merged.push({ ...interval });
+  }
+  const minimumGap = Math.max(16, width * 0.032);
+  const candidates = [];
+  for (let index = 0; index < merged.length - 1; index += 1) {
+    const left = merged[index].end;
+    const right = merged[index + 1].start;
+    const gap = right - left;
+    const split = (left + right) / 2;
+    if (gap >= minimumGap && split >= width * 0.34 && split <= width * 0.67) {
+      const leftWords = words.filter((word) => wordMiddleY(word) >= height * 0.22 && wordMiddleY(word) <= height * 0.9 && wordCenter(word) < split).length;
+      const rightWords = words.filter((word) => wordMiddleY(word) >= height * 0.22 && wordMiddleY(word) <= height * 0.9 && wordCenter(word) >= split).length;
+      if (leftWords >= 4 && rightWords >= 4) candidates.push({ split, gap });
+    }
+  }
+  candidates.sort((a, b) => b.gap - a.gap);
+  return candidates[0]?.split ?? null;
+}
+
+function groupPositionedWords(words, width, height, forceSingleColumn = false) {
+  const usable = words.filter((word) => word.text && word.bbox
+    && Number.isFinite(word.bbox.x0) && Number.isFinite(word.bbox.x1)
+    && Number.isFinite(word.bbox.y0) && Number.isFinite(word.bbox.y1));
+  if (!usable.length) return { lines: [], split: null, bounds: [] };
+
+  const split = forceSingleColumn ? null : findColumnSplit(usable, width, height);
+  const heights = usable.map((word) => Math.max(1, word.bbox.y1 - word.bbox.y0)).sort((a, b) => a - b);
+  const lineTolerance = Math.max(4, heights[Math.floor(heights.length / 2)] * 0.62);
+  const sorted = [...usable].sort((a, b) => wordMiddleY(a) - wordMiddleY(b) || wordCenter(a) - wordCenter(b));
+  const rawLines = [];
+  for (const word of sorted) {
+    const centerY = wordMiddleY(word);
+    let line = rawLines.at(-1);
+    if (!line || Math.abs(centerY - line.centerY) > lineTolerance) {
+      line = { centerY, words: [] };
+      rawLines.push(line);
+    }
+    line.words.push(word);
+    line.centerY = line.words.reduce((sum, item) => sum + wordMiddleY(item), 0) / line.words.length;
+  }
+
+  const bodyWords = usable.filter((word) => wordMiddleY(word) >= height * 0.22 && wordMiddleY(word) <= height * 0.9);
+  const columns = split === null ? [bodyWords.length ? bodyWords : usable] : [
+    bodyWords.filter((word) => wordCenter(word) < split),
+    bodyWords.filter((word) => wordCenter(word) >= split),
+  ];
+  const bounds = columns.map((column) => ({
+    minX: Math.min(...column.map((word) => word.bbox.x0)),
+    maxX: Math.max(...column.map((word) => word.bbox.x1)),
+  }));
+  const lines = [];
+  for (const rawLine of rawLines) {
+    const groups = split === null
+      ? [rawLine.words]
+      : [rawLine.words.filter((word) => wordCenter(word) < split), rawLine.words.filter((word) => wordCenter(word) >= split)];
+    groups.forEach((lineWords, columnIndex) => {
+      if (!lineWords.length) return;
+      lineWords.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+      lines.push({ words: lineWords, column: columnIndex, centerY: rawLine.centerY, height: Math.max(...lineWords.map((word) => word.bbox.y1 - word.bbox.y0)) });
+    });
+  }
+  lines.sort((a, b) => a.centerY - b.centerY || a.column - b.column);
+  return { lines, split, bounds };
+}
+
+function getOcrWords(data) {
+  const words = [];
+  for (const block of data?.blocks ?? []) {
+    for (const paragraph of block.paragraphs ?? []) {
+      for (const line of paragraph.lines ?? []) {
+        for (const word of line.words ?? []) {
+          if (word.text?.trim() && word.bbox) words.push({ text: word.text.trim(), bbox: word.bbox, confidence: Number(word.confidence) });
+        }
+      }
+    }
+  }
+  return words;
+}
+
+function priceFromLine(words, bounds) {
+  for (let index = words.length - 1; index >= 0; index -= 1) {
+    const current = words[index];
+    let token = current.text.replace(/[Oo]/g, '0').replace(/^[sS](?=\d)/, '$');
+    let currencyIndex = -1;
+    if (index > 0 && /^\$|^[sS]$/.test(words[index - 1].text)) currencyIndex = index - 1;
+    if (/^\$?$/.test(token) && index + 1 < words.length) {
+      const next = words[index + 1].text.replace(/[Oo]/g, '0');
+      if (/^\d[\d.,]*$/.test(next)) { token = `$${next}`; currencyIndex = index; }
+    }
+    if (!/^\$?\d[\d.,]*$/.test(token)) continue;
+    const digits = token.replace(/\D/g, '');
+    const hasCurrency = token.startsWith('$') || currencyIndex >= 0;
+    const hasGroupedThousands = /\d[.,]\d{3}(?:$|[.,]\d{1,2}$)/.test(token);
+    const edge = bounds ? Math.max(12, (bounds.maxX - bounds.minX) * 0.26) : 0;
+    const rightAligned = bounds && current.bbox.x0 >= bounds.maxX - edge;
+    if (!hasCurrency && !hasGroupedThousands && !(digits.length >= 4 && rightAligned)) continue;
+    const priceArs = parsePrice(token);
+    if (priceArs) return { priceArs, priceIndex: index, currencyIndex, confidence: Number.isFinite(current.confidence) ? current.confidence : 0 };
+  }
+  return null;
+}
+
+function lineConfidence(words) {
+  const values = words.map((word) => word.confidence).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function parsePositionedMenu(words, width, height, options = {}) {
+  const grouped = groupPositionedWords(words, width, height, options.forceSingleColumn === true);
+  const products = [];
+  const currentCategory = ['General', 'General'];
+  let skippedPriceLines = 0;
+  for (const line of grouped.lines) {
+    const { column, words: lineWords, centerY } = line;
+    const bounds = grouped.bounds[column] ?? grouped.bounds[0];
+    const price = priceFromLine(lineWords, bounds);
+    const nameWords = price
+      ? lineWords.filter((word, index) => index !== price.priceIndex && index !== price.currencyIndex && word.bbox.x0 < lineWords[price.priceIndex].bbox.x0)
+      : lineWords;
+    const text = lineWords.map((word) => word.text).join(' ').replace(/\s+/g, ' ').trim();
+    const label = nameWords.map((word) => word.text).join(' ').replace(/\s+/g, ' ').replace(/[\s.,:;|–—-]+$/, '').trim();
+    if (price && label && /\p{L}/u.test(label)) {
+      const priceConfidence = Number.isFinite(price.confidence) ? price.confidence : lineConfidence(lineWords);
+      const confidence = Math.min(lineConfidence(nameWords), priceConfidence);
+      const product = cleanProduct({
+        name: label,
+        category: currentCategory[column],
+        priceArs: price.priceArs,
+        confidence,
+        needsReview: confidence < 68,
+        selected: confidence >= 68,
+      });
+      if (product) {
+        product._sourceY = centerY;
+        product._column = column;
+        products.push(product);
+      }
+      continue;
+    }
+    if (price) { skippedPriceLines += 1; continue; }
+    if (centerY < height * 0.22 || centerY > height * 0.9) continue;
+
+    const key = simplify(text).replace(/[.:]$/, '');
+    const uppercaseHeading = text.length <= 32 && text === text.toLocaleUpperCase('es-AR') && !/[.!?\d]/.test(text) && text.split(/\s+/).length <= 4;
+    if (MENU_CATEGORIES.has(key) || uppercaseHeading) {
+      currentCategory[column] = text.replace(/[:：]$/, '').slice(0, 40);
+      continue;
+    }
+
+    const previous = [...products].reverse().find((product) => product._column === column);
+    if (previous && centerY - previous._sourceY <= Math.max(48, line.height * 3.8)) {
+      if (/combo/i.test(previous.category) || /\+/.test(previous.name)) previous.name = `${previous.name} ${text}`.slice(0, 100);
+      else previous.description = `${previous.description} ${text}`.trim().slice(0, 240);
+    } else if (/\d/.test(text)) skippedPriceLines += 1;
+  }
+
+  for (const product of products) { delete product._sourceY; delete product._column; }
+  return { products: deduplicate(products), skippedPriceLines, split: grouped.split };
+}
+
+function countExplicitPriceTokens(words) {
+  return words.filter((word) => /^\$?\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?$/.test(word.text.replace(/[Oo]/g, '0'))).length;
+}
+
+function menuParseScore(parsed) {
+  const confidence = parsed.products.reduce((sum, product) => sum + (product.confidence ?? 100), 0);
+  return parsed.products.length + confidence / 500 - parsed.skippedPriceLines * 0.4;
+}
+
+async function recognizeMenuCanvas(worker, canvas, onProgress) {
+  const first = await worker.recognize(canvas, {}, { blocks: true });
+  const firstWords = getOcrWords(first.data);
+  const primary = parsePositionedMenu(firstWords, canvas.width, canvas.height);
+  const priceTokens = countExplicitPriceTokens(firstWords);
+  const uncertain = primary.products.filter((product) => product.needsReview).length;
+  const shouldRetry = primary.products.length < 3
+    || primary.skippedPriceLines > 1
+    || (priceTokens >= 4 && primary.products.length < priceTokens * 0.82)
+    || (primary.products.length > 0 && uncertain / primary.products.length > 0.35);
+  if (!shouldRetry) return primary;
+
+  postProgress(onProgress, 'Comprobando las líneas dudosas con una segunda lectura…');
+  const crops = [];
+  if (primary.split !== null) {
+    for (const [left, right] of [[0, primary.split], [primary.split, canvas.width]]) {
+      const crop = document.createElement('canvas');
+      crop.width = Math.max(1, Math.round(right - left));
+      crop.height = canvas.height;
+      crop.getContext('2d', { willReadFrequently: true }).drawImage(canvas, left, 0, right - left, canvas.height, 0, 0, crop.width, crop.height);
+      crops.push(crop);
+    }
+  } else crops.push(canvas);
+
+  let alternative = { products: [], skippedPriceLines: 0, split: null };
+  for (const crop of crops) {
+    const result = await worker.recognize(crop, { tessedit_pageseg_mode: '6' }, { blocks: true });
+    const parsed = parsePositionedMenu(getOcrWords(result.data), crop.width, crop.height, { forceSingleColumn: crop !== canvas });
+    alternative.products.push(...parsed.products);
+    alternative.skippedPriceLines += parsed.skippedPriceLines;
+    if (crop !== canvas) { crop.width = 0; crop.height = 0; }
+  }
+  alternative.products = deduplicate(alternative.products);
+  return menuParseScore(alternative) > menuParseScore(primary) ? alternative : primary;
 }
 
 function mapJsonProducts(value) {
@@ -217,7 +449,7 @@ async function createOcrWorker(onProgress) {
 
 async function imageToCanvas(file) {
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, OCR_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+  const scale = Math.min(2, OCR_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
@@ -232,17 +464,38 @@ async function pdfText(pdfjs, file) {
   const pages = [];
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
     const content = await page.getTextContent();
     let line = '';
     const lines = [];
+    const words = [];
     for (const item of content.items) {
       if (!('str' in item)) continue;
       line += item.str;
       if (item.hasEOL) { if (line.trim()) lines.push(line.trim()); line = ''; }
       else line += ' ';
+
+      const parts = item.str.match(/\S+/g) ?? [];
+      if (!parts.length) continue;
+      const [a, b, c, d, e, f] = viewport.transform;
+      const [ta, tb, tc, td, tx, ty] = item.transform;
+      const x = a * tx + c * ty + e;
+      const y = b * tx + d * ty + f;
+      const itemWidth = Math.max(1, Number(item.width) || parts.join('').length * 5);
+      const itemHeight = Math.max(5, Number(item.height) || Math.hypot(tb, td));
+      let cursor = 0;
+      for (const part of parts) {
+        const offset = item.str.indexOf(part, cursor);
+        const start = Math.max(cursor, offset);
+        const end = start + part.length;
+        const x0 = x + itemWidth * start / item.str.length;
+        const x1 = x + itemWidth * end / item.str.length;
+        words.push({ text: part, bbox: { x0, x1: Math.max(x0 + 1, x1), y0: y - itemHeight, y1: y }, confidence: 100 });
+        cursor = end;
+      }
     }
     if (line.trim()) lines.push(line.trim());
-    pages.push({ page, text: lines.join('\n') });
+    pages.push({ page, text: lines.join('\n'), words, width: viewport.width, height: viewport.height });
   }
   return { document, pages };
 }
@@ -252,7 +505,8 @@ async function ocrPdfPages(pdf, onProgress) {
   postProgress(onProgress, 'El PDF no contiene texto seleccionable. Preparando OCR…');
   const worker = await createOcrWorker(onProgress);
   try {
-    const texts = [];
+    const products = [];
+    let skippedPriceLines = 0;
     for (const [index, { page }] of pdf.pages.entries()) {
       const viewport = page.getViewport({ scale: 1.8 });
       const scale = Math.min(1, OCR_MAX_SIDE / Math.max(viewport.width, viewport.height));
@@ -262,11 +516,13 @@ async function ocrPdfPages(pdf, onProgress) {
       canvas.height = Math.ceil(renderViewport.height);
       await page.render({ canvas, canvasContext: canvas.getContext('2d') }).promise;
       postProgress(onProgress, `Leyendo página ${index + 1} de ${pdf.pages.length}…`);
-      texts.push((await worker.recognize(canvas)).data.text);
+      const parsed = await recognizeMenuCanvas(worker, canvas, onProgress);
+      products.push(...parsed.products);
+      skippedPriceLines += parsed.skippedPriceLines;
       canvas.width = 0;
       canvas.height = 0;
     }
-    return texts.join('\n');
+    return { products: deduplicate(products), skippedPriceLines };
   } finally { await worker.terminate(); }
 }
 
@@ -276,6 +532,7 @@ export async function parseMenuFile(file, onProgress = () => {}) {
   const extension = file.name.split('.').pop().toLowerCase();
   let products = [];
   let method = 'archivo';
+  let skippedPriceLines = 0;
   postProgress(onProgress, 'Analizando el archivo en este dispositivo…');
 
   if (['csv', 'tsv', 'txt', 'rtf', 'json'].includes(extension)) {
@@ -307,17 +564,26 @@ export async function parseMenuFile(file, onProgress = () => {}) {
     const pdfjs = await loadPdfJs();
     const pdf = await pdfText(pdfjs, file);
     try {
-      const text = pdf.pages.map((page) => page.text).join('\n');
-      products = parseTextMenu(text);
-      if (!products.length) products = parseTextMenu(await ocrPdfPages(pdf, onProgress));
+      for (const page of pdf.pages) {
+        const parsed = parsePositionedMenu(page.words, page.width, page.height);
+        products.push(...parsed.products);
+        skippedPriceLines += parsed.skippedPriceLines;
+      }
+      products = deduplicate(products);
+      if (!products.length) {
+        const parsed = await ocrPdfPages(pdf, onProgress);
+        products = parsed.products;
+        skippedPriceLines += parsed.skippedPriceLines;
+      }
     } finally { await pdf.document.destroy(); }
     method = 'PDF';
   } else if (['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff'].includes(extension)) {
     const worker = await createOcrWorker(onProgress);
     try {
       const canvas = await imageToCanvas(file);
-      const result = await worker.recognize(canvas);
-      products = parseTextMenu(result.data.text);
+      const parsed = await recognizeMenuCanvas(worker, canvas, onProgress);
+      products = parsed.products;
+      skippedPriceLines = parsed.skippedPriceLines;
       canvas.width = 0;
       canvas.height = 0;
     } finally { await worker.terminate(); }
@@ -328,14 +594,21 @@ export async function parseMenuFile(file, onProgress = () => {}) {
 
   if (!products.length) throw new Error('No detectamos productos con precio. Probá con un archivo más nítido o una planilla con columnas de producto y precio.');
   if (products.length > MAX_IMPORT_ROWS) throw new Error(`El archivo contiene más de ${MAX_IMPORT_ROWS} productos. Dividilo en archivos más pequeños para importarlos sin omitir registros.`);
-  return { products, method };
+  return {
+    products,
+    method,
+    quality: {
+      needsReview: products.filter((item) => item.needsReview).length,
+      skippedPriceLines,
+    },
+  };
 }
 
 export function markExistingProducts(imported, existing) {
   const existingNames = new Set(existing.map((item) => simplify(item.name)));
   return imported.map((item) => {
     const duplicate = existingNames.has(simplify(item.name));
-    return { ...item, duplicate, selected: !duplicate };
+    return { ...item, duplicate, selected: !duplicate && item.selected !== false };
   });
 }
 

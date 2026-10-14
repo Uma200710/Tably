@@ -149,6 +149,7 @@ a { color: inherit; }
 .import-dialog-head h2 { margin: 3px 0 0; font: 600 25px 'Fraunces', serif; }
 .dialog-close { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--ink); font-size: 23px; }
 .import-privacy { margin: 10px 0 16px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.import-quality { margin: -5px 0 12px; padding: 10px 12px; border-left: 3px solid var(--accent); border-radius: 4px; background: var(--accent-soft); color: var(--ink); font-size: 13px; line-height: 1.5; }
 .import-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
 .import-toolbar label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .import-toolbar input, .import-table input[type="checkbox"] { accent-color: var(--accent); }
@@ -160,6 +161,8 @@ a { color: inherit; }
 .import-table input:not([type="checkbox"]) { width: 100%; min-width: 90px; padding: 8px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--control-surface); color: var(--ink); font: inherit; }
 .import-table td:nth-child(4) { min-width: 190px; }
 .import-table tr.is-duplicate { background: var(--soft); opacity: .7; }
+.import-table tr.needs-review:not(.is-duplicate) { background: var(--accent-soft); }
+.import-table tr.needs-review:not(.is-duplicate) td small { color: var(--accent); font-weight: 600; }
 .import-table td small { display: block; margin-top: 4px; color: var(--muted); }
 .import-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 14px; }
 .menu-create { display: grid; gap: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }

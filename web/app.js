@@ -289,18 +289,23 @@ function bindMenuControls() {
   syncMenuSaveAll();
 }
 
-function showMenuImportPreview(products, fileName, method) {
+function showMenuImportPreview(products, fileName, method, quality = {}) {
   const dialog = document.createElement('dialog');
   dialog.className = 'menu-import-dialog';
   const selectedCount = products.filter((item) => item.selected).length;
+  const reviewCount = products.filter((item) => item.needsReview && !item.duplicate).length;
+  const qualityNotes = [];
+  if (reviewCount) qualityNotes.push(`${reviewCount} ${reviewCount === 1 ? 'lectura requiere' : 'lecturas requieren'} revisión; ${reviewCount === 1 ? 'se dejó' : 'se dejaron'} sin seleccionar.`);
+  if (quality.skippedPriceLines) qualityNotes.push(`Se descartaron ${quality.skippedPriceLines} ${quality.skippedPriceLines === 1 ? 'cifra o línea' : 'cifras o líneas'} que no se pudieron asociar con seguridad.`);
   dialog.innerHTML = `<div class="import-dialog-head"><div><span class="muted small">${esc(method)} · ${products.length} productos detectados</span><h2>Revisá el menú</h2></div><button class="dialog-close" type="button" aria-label="Cerrar">×</button></div>
     <p class="import-privacy">${esc(fileName)}. El archivo se analizó en este dispositivo. Solo se guardan los productos que confirmes.</p>
+    ${qualityNotes.length ? `<p class="import-quality">${qualityNotes.map(esc).join(' ')}</p>` : ''}
     <div class="import-toolbar"><label><input type="checkbox" id="import-select-all" ${selectedCount === products.filter((item) => !item.duplicate).length ? 'checked' : ''}> Seleccionar todos los productos nuevos</label><span class="muted small" id="import-selection-count">${selectedCount} seleccionados</span></div>
     <div class="import-table-wrap"><table class="import-table"><thead><tr><th>Agregar</th><th>Categoría</th><th>Producto</th><th>Descripción</th><th>Precio (ARS)</th></tr></thead>
-      <tbody>${products.map((item, index) => `<tr data-import-row="${index}" class="${item.duplicate ? 'is-duplicate' : ''}">
+      <tbody>${products.map((item, index) => `<tr data-import-row="${index}" class="${item.duplicate ? 'is-duplicate' : ''} ${item.needsReview && !item.duplicate ? 'needs-review' : ''}">
         <td><input type="checkbox" data-import-select ${item.selected ? 'checked' : ''} ${item.duplicate ? 'disabled' : ''} aria-label="${item.duplicate ? 'Ya existe en el menú' : 'Importar producto'}"></td>
         <td><input data-import-field="category" value="${esc(item.category)}" maxlength="40" aria-label="Categoría" ${item.duplicate ? 'disabled' : ''}></td>
-        <td><input data-import-field="name" value="${esc(item.name)}" maxlength="100" aria-label="Producto" ${item.duplicate ? 'disabled' : ''}><small>${item.duplicate ? 'Ya existe en el menú; se omitirá.' : ''}</small></td>
+        <td><input data-import-field="name" value="${esc(item.name)}" maxlength="100" aria-label="Producto" ${item.duplicate ? 'disabled' : ''}><small>${item.duplicate ? 'Ya existe en el menú; se omitirá.' : item.needsReview ? `Lectura dudosa (${item.confidence ?? 0} %). Corrige nombre y precio antes de agregar.` : item.confidence != null ? `Lectura clara · ${item.confidence} %` : ''}</small></td>
         <td><input data-import-field="description" value="${esc(item.description)}" maxlength="240" aria-label="Descripción" ${item.duplicate ? 'disabled' : ''}></td>
         <td><input data-import-field="priceArs" type="number" min="1" step="1" value="${item.priceArs}" aria-label="Precio" ${item.duplicate ? 'disabled' : ''}></td>
       </tr>`).join('')}</tbody></table></div>
@@ -371,11 +376,11 @@ function bindMenuImport() {
     trigger.disabled = true;
     status.textContent = 'Analizando el archivo…';
     try {
-      const { products, method } = await parseMenuFile(file, (message) => { status.textContent = message; });
+      const { products, method, quality } = await parseMenuFile(file, (message) => { status.textContent = message; });
       const existing = await api('/api/admin/menu');
       const prepared = markExistingProducts(products, existing);
       status.textContent = `${prepared.length} productos listos para revisar.`;
-      showMenuImportPreview(prepared, file.name, method);
+      showMenuImportPreview(prepared, file.name, method, quality);
     } catch (error) {
       status.textContent = 'No se pudo leer el archivo.';
       toast(error.message);
